@@ -5,30 +5,32 @@ const mobileNumberInput = async () => {
   const question = {
     type: "input",
     name: "phoneNumber",
-    message: "Please enter your mobile number with country code (without +):",
+    message: "Please enter your mobile number with country code (example: +14155552671):",
     validate: function (input) {
-      const regex = /^\d{1,3}\d{9,11}$/;
+      const normalized = String(input || "").trim();
+      // Accept E.164-like numbers with optional leading +
+      const regex = /^\+?\d{8,15}$/;
       if (!regex.test(input)) {
-        return "Please enter a valid mobile number with country code (without +).";
+        return "Please enter a valid number in international format, e.g. +14155552671.";
       }
       return true; // Input is valid
     },
   };
 
   const { phoneNumber } = await inquirer.prompt(question);
-  return phoneNumber;
+  return String(phoneNumber).trim();
 };
 
 const optInput = async () => {
   const question = {
     type: "input",
     name: "otp",
-    message: "Please enter the 5-digit OTP:",
+    message: "Please enter OTP from Telegram (5 or 6 digits):",
     validate: function (input) {
-      // Regular expression to match a 5-digit numeric OTP
-      const regex = /^\d{5}$/;
+      // Telegram codes are usually 5 digits, but can be 6 in some regions/flows.
+      const regex = /^\d{5,6}$/;
       if (!regex.test(input)) {
-        return "Please enter a valid 5-digit numeric OTP.";
+        return "Please enter a valid numeric OTP (5 or 6 digits).";
       }
       return true; // Input is valid
     },
