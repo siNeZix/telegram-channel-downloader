@@ -76,11 +76,15 @@ const numberInput = async (
   return parseFloat(number);
 };
 
-const booleanInput = async (message = "Please answer with yes or no") => {
+const booleanInput = async (
+  message = "Please answer with yes or no",
+  defaultValue = true
+) => {
   const question = {
     type: "confirm",
     name: "confirm",
     message: message,
+    default: defaultValue,
   };
 
   const { confirm } = await inquirer.prompt(question);

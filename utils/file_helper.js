@@ -10,10 +10,10 @@ const updateCredentials = (obj) => {
         let credentials = JSON.parse(data);
         credentials = { ...credentials, ...obj };
         fs.writeFileSync(path.join(__dirname, configFile), JSON.stringify(credentials, null, 2));
-        logMessage.success('Credentials updated successfully');
+        logMessage.info('Credentials updated successfully');
     }
     catch (err) {
-        logMessage.error(err);
+        logMessage.error(err?.message || String(err));
     }
 }
 
@@ -50,10 +50,10 @@ const updateLastSelection = (object) => {
         }
 
         fs.writeFileSync(path.join(__dirname, lastSelectionFile), JSON.stringify(last, null, 2));
-        logMessage.success('Last selection updated successfully');
+        logMessage.debug('Last selection updated');
     }
     catch (err) {
-        logMessage.error(err);
+        logMessage.error(err?.message || String(err));
     }
 }
 

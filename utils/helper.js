@@ -27,6 +27,16 @@ let consoleColors = {
 	reset: "\x1b[0m",
 };
 
+const LOG_LEVELS = {
+	debug: 10,
+	info: 20,
+	success: 20,
+	error: 30,
+};
+const CURRENT_LOG_LEVEL = process.env.LOG_LEVEL || "info";
+const shouldLog = (level) =>
+	LOG_LEVELS[level] >= (LOG_LEVELS[CURRENT_LOG_LEVEL] || LOG_LEVELS.info);
+
 const getMediaType = (message) => {
 	if (message.media) {
 		if (message.media.photo) return MEDIA_TYPES.IMAGE;
@@ -172,18 +182,22 @@ const getDialogType = (dialog) => {
 
 const logMessage = {
 	info: (message) => {
+		if (!shouldLog("info")) return;
 		let logMessage = `📢: ${consoleColors.magenta} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
 	},
 	error: (message) => {
+		if (!shouldLog("error")) return;
 		let logMessage = `❌ ${consoleColors.red} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
 	},
 	success: (message) => {
+		if (!shouldLog("success")) return;
 		let logMessage = `✅ ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
 	},
 	debug: (message) => {
+		if (!shouldLog("debug")) return;
 		let logMessage = `⚠️ ${message}`;
 		console.log(logMessage);
 	},

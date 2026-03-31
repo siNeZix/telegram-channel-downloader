@@ -23,7 +23,7 @@ var client = null;
     await searchOrListChannel(dialogs);
   } else {
     logMessage.success(`Selected channel is: ${getDialogName(channelId)}`);
-    const changeChannel = await booleanInput("Do you want to change channel?");
+    const changeChannel = await booleanInput("Do you want to change channel?", false);
     if (changeChannel) {
       await searchOrListChannel(dialogs);
     }
