@@ -80,6 +80,8 @@ const logDownloadProgress = (
 	failed,
 	speedHistory,
 	totalBytesDownloaded,
+	activeDownloads = 0,
+	maxParallel = MAX_PARALLEL_DOWNLOAD,
 ) => {
 	const finished = success + failed;
 	const percent =
@@ -136,10 +138,10 @@ const logDownloadProgress = (
 			? `${speedMBs.toFixed(2)} MB/s (avg 10s)`
 			: `${(totalBytesDownloaded / (1024 * 1024) / Math.max(elapsedSec, 1)).toFixed(2)} MB/s (overall)`;
 
-	// Добавляем временную метку
+	// Добавляем временную метку и состояние очереди
 	const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
 	logMessage.info(
-		`[${timestamp}] Download progress: ${finished}/${totalFiles} (${percent}%), failed: ${failed}, speed: ${speedText}, downloaded: ${formatBytes(totalBytesDownloaded)}, ETA: ${eta}`,
+		`[${timestamp}] [Queue: ${activeDownloads}/${maxParallel}] Download progress: ${finished}/${totalFiles} (${percent}%), failed: ${failed}, speed: ${speedText}, downloaded: ${formatBytes(totalBytesDownloaded)}, ETA: ${eta}`,
 	);
 };
 
@@ -326,6 +328,9 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
 		populateFileCache(outputFolder, mediaTypes);
 
+		// Очередь загрузок теперь живет на протяжении всего процесса
+		let activeDownloads = new Set();
+
 		while (true) {
 			const inFastForwardRange =
 				fastForwardMode &&
@@ -341,6 +346,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 			}
 
 			let allMessages = [];
+			logMessage.info(`Fetching next batch of messages (limit: ${messageLimit}, offset: ${offsetId})...`);
 			let messages = await runWithFloodControl(
 				floodState,
 				"getMessages",
@@ -515,7 +521,6 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 				);
 			}
 
-			let activeDownloads = new Set();
 			for (let i = 0; i < messages.length; i++) {
 				const message = messages[i];
 				if (message.media) {
@@ -591,6 +596,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 										failedDownloads,
 										speedHistory,
 										totalBytesDownloaded,
+										activeDownloads.size,
+										floodState.currentParallelLimit,
 									);
 									lastProgressLogAt = now;
 								}
@@ -612,6 +619,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 										failedDownloads,
 										speedHistory,
 										totalBytesDownloaded,
+										activeDownloads.size,
+										floodState.currentParallelLimit,
 									);
 									lastProgressLogAt = now;
 								}
@@ -641,24 +650,28 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 					}
 				}
 			}
-			if (activeDownloads.size > 0) {
-				logMessage.info("Waiting for files to be downloaded");
-				await Promise.all([...activeDownloads]);
-			}
-
 			// Обновляем общую статистику пропущенных из текущей пачки
 			skippedExisting += batchSkippedExisting;
-
-			logMessage.success("Files downloaded successfully");
-			logMessage.info(
-				`Skip summary: existing=${skippedExisting}, byType=${skippedByType}, byTextFilter=${skippedByTextFilter}`,
-			);
 
 			appendToJSONArrayFile(messageFilePath, allMessages);
 			offsetId = messages[messages.length - 1].id;
 			updateLastSelection({ messageOffsetId: offsetId });
-			await wait(3);
+			// Убран wait(3) для оптимизации - новые сообщения запрашиваются сразу
 		}
+
+		// Все сообщения обработаны, ждем завершения оставшихся загрузок
+		if (activeDownloads.size > 0) {
+			logMessage.info(`Waiting for ${activeDownloads.size} remaining files to be downloaded...`);
+			await Promise.all([...activeDownloads]);
+		}
+
+		logMessage.success("All files downloaded successfully");
+		logMessage.info(
+			`Skip summary: existing=${skippedExisting}, byType=${skippedByType}, byTextFilter=${skippedByTextFilter}`,
+		);
+		logMessage.info(
+			`Total: fetched=${totalFetched}, downloaded=${successfulDownloads}, failed=${failedDownloads}, skipped=${skippedExisting}`,
+		);
 
 		// Очищаем кэши после завершения
 		clearFileCache();
@@ -794,6 +807,8 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 								failedDownloads,
 								speedHistory,
 								totalBytesDownloaded,
+								activeDownloads.size,
+								floodState.currentParallelLimit,
 							);
 							lastProgressLogAt = now;
 						}
@@ -814,6 +829,8 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 								failedDownloads,
 								speedHistory,
 								totalBytesDownloaded,
+								activeDownloads.size,
+								floodState.currentParallelLimit,
 							);
 							lastProgressLogAt = now;
 						}
