@@ -116,8 +116,10 @@ const logDownloadProgress = (
 			? `${speedMBs.toFixed(2)} MB/s (avg 10s)`
 			: `${(totalBytesDownloaded / (1024 * 1024) / Math.max(elapsedSec, 1)).toFixed(2)} MB/s (overall)`;
 
+	// Добавляем временную метку
+	const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
 	logMessage.info(
-		`Download progress: ${finished}/${totalFiles} (${percent}%), failed: ${failed}, speed: ${speedText}, downloaded: ${formatBytes(totalBytesDownloaded)}, ETA: ${eta}`,
+		`[${timestamp}] Download progress: ${finished}/${totalFiles} (${percent}%), failed: ${failed}, speed: ${speedText}, downloaded: ${formatBytes(totalBytesDownloaded)}, ETA: ${eta}`,
 	);
 };
 
@@ -418,7 +420,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 					totalFilesToDownload = Math.min(
 						Math.max(totalFilesToDownload, estimatedTotal),
 						actualFilesFound +
-							(totalMessagesInChannel - totalFetched) * 0.5, // Не более 50% медиа в оставшихся
+							Math.ceil((totalMessagesInChannel - totalFetched) * 0.5), // Не более 50% медиа в оставшихся
 					);
 				} else {
 					// При малом количестве сканированных сообщений используем фактическое число
