@@ -7,6 +7,9 @@ const {
 	circularStringify,
 	checkFileExist,
 	getMediaPath,
+	populateFileCache,
+	clearFileCache,
+	filterString,
 } = require("../utils/helper");
 const {
 	getLastSelection,
@@ -41,16 +44,80 @@ const formatEta = (totalSeconds) => {
 	return `${hh}:${mm}:${ss}`;
 };
 
-const logDownloadProgress = (startedAt, queued, success, failed) => {
+const formatBytes = (bytes) => {
+	if (bytes === 0) return "0 MB";
+	const mb = bytes / (1024 * 1024);
+	if (mb >= 1000) {
+		return `${(mb / 1024).toFixed(2)} GB`;
+	}
+	return `${mb.toFixed(2)} MB`;
+};
+
+const logDownloadProgress = (
+	startedAt,
+	totalFiles,
+	success,
+	failed,
+	speedHistory,
+	totalBytesDownloaded,
+) => {
 	const finished = success + failed;
 	const percent =
-		queued > 0 ? Math.round((finished * 100) / queued) : 100;
+		totalFiles > 0 ? Math.round((finished * 100) / totalFiles) : 100;
+
+	// Средняя скорость за всё время
 	const elapsedSec = (Date.now() - startedAt) / 1000;
-	const rate = elapsedSec > 0 ? finished / elapsedSec : 0;
-	const remaining = Math.max(0, queued - finished);
-	const eta = rate > 0 ? formatEta(remaining / rate) : "unknown";
+	const overallRate = elapsedSec > 0 ? finished / elapsedSec : 0;
+
+	// Средняя скорость за последние 10 секунд (в МБ/с)
+	const now = Date.now();
+	const tenSecondsAgo = now - 10000;
+
+	// Удаляем старые записи
+	while (
+		speedHistory.length > 0 &&
+		speedHistory[0].timestamp < tenSecondsAgo
+	) {
+		speedHistory.shift();
+	}
+
+	// Добавляем текущую точку
+	speedHistory.push({
+		timestamp: now,
+		completed: finished,
+		bytes: totalBytesDownloaded,
+	});
+
+	// Рассчитываем скорость за последние 10 секунд
+	let recentRate = 0; // файлов/с
+	let recentBytesRate = 0; // байт/с
+	if (speedHistory.length >= 2) {
+		const firstPoint = speedHistory[0];
+		const lastPoint = speedHistory[speedHistory.length - 1];
+		const timeDiff = (lastPoint.timestamp - firstPoint.timestamp) / 1000;
+		if (timeDiff > 0) {
+			recentRate =
+				(lastPoint.completed - firstPoint.completed) / timeDiff;
+			recentBytesRate = (lastPoint.bytes - firstPoint.bytes) / timeDiff;
+		}
+	}
+
+	const remaining = Math.max(0, totalFiles - finished);
+	const eta =
+		recentRate > 0
+			? formatEta(remaining / recentRate)
+			: overallRate > 0
+				? formatEta(remaining / overallRate)
+				: "unknown";
+
+	const speedMBs = recentBytesRate / (1024 * 1024);
+	const speedText =
+		speedHistory.length >= 2
+			? `${speedMBs.toFixed(2)} MB/s (avg 10s)`
+			: `${(totalBytesDownloaded / (1024 * 1024) / Math.max(elapsedSec, 1)).toFixed(2)} MB/s (overall)`;
+
 	logMessage.info(
-		`Download progress: ${finished}/${queued} (${percent}%), failed: ${failed}, ETA: ${eta}`
+		`Download progress: ${finished}/${totalFiles} (${percent}%), failed: ${failed}, speed: ${speedText}, downloaded: ${formatBytes(totalBytesDownloaded)}, ETA: ${eta}`,
 	);
 };
 
@@ -92,7 +159,7 @@ const maybeWaitCooldown = async (state) => {
 	if (state.cooldownUntil > now) {
 		const remainingSeconds = Math.ceil((state.cooldownUntil - now) / 1000);
 		logMessage.info(
-			`Flood cooldown active, waiting ${remainingSeconds}s before next API call`
+			`Flood cooldown active, waiting ${remainingSeconds}s before next API call`,
 		);
 		await wait(remainingSeconds);
 	}
@@ -114,7 +181,7 @@ const runWithFloodControl = async (state, label, fn) => {
 				state.currentParallelLimit += 1;
 				state.successStreak = 0;
 				logMessage.info(
-					`Flood control: increased parallel limit to ${state.currentParallelLimit}`
+					`Flood control: increased parallel limit to ${state.currentParallelLimit}`,
 				);
 			}
 			return result;
@@ -125,11 +192,11 @@ const runWithFloodControl = async (state, label, fn) => {
 				state.successStreak = 0;
 				state.currentParallelLimit = Math.max(
 					MIN_PARALLEL_DOWNLOAD,
-					state.currentParallelLimit - 1
+					state.currentParallelLimit - 1,
 				);
 				state.cooldownUntil = Date.now() + (floodSeconds + 2) * 1000;
 				logMessage.error(
-					`Flood detected in ${label}. Wait ${floodSeconds}s, retry ${attempt}/${MAX_RPC_RETRIES}. Parallel limit now ${state.currentParallelLimit}`
+					`Flood detected in ${label}. Wait ${floodSeconds}s, retry ${attempt}/${MAX_RPC_RETRIES}. Parallel limit now ${state.currentParallelLimit}`,
 				);
 				await sleepWithFloodBuffer(floodSeconds);
 				continue;
@@ -138,7 +205,7 @@ const runWithFloodControl = async (state, label, fn) => {
 		}
 	}
 	throw new Error(
-		`Exceeded retry limit (${MAX_RPC_RETRIES}) for ${label} due to flood protection`
+		`Exceeded retry limit (${MAX_RPC_RETRIES}) for ${label} due to flood protection`,
 	);
 };
 
@@ -150,52 +217,59 @@ const downloadMessageMedia = async (client, message, mediaPath, floodState) => {
 				if (url) {
 					let urlPath = path.join(
 						mediaPath,
-						`../${message.id}_url.txt`
+						`../${message.id}_url.txt`,
 					);
 					fs.writeFileSync(urlPath, url);
 				}
 
 				mediaPath = path.join(
 					mediaPath,
-					`../${message?.media?.webpage?.id}_image.jpeg`
+					`../${message?.media?.webpage?.id}_image.jpeg`,
 				);
 			}
 
 			if (message.media.poll) {
 				let pollPath = path.join(
 					mediaPath,
-					`../${message.id}_poll.json`
+					`../${message.id}_poll.json`,
 				);
 
 				fs.writeFileSync(
 					pollPath,
-					circularStringify(message.media.poll, null, 2)
+					circularStringify(message.media.poll, null, 2),
 				);
 			}
 
+			let fileSize = 0;
 			await runWithFloodControl(floodState, "downloadMedia", async () => {
 				return client.downloadMedia(message, {
 					outputFile: mediaPath,
 					progressCallback: (downloaded, total) => {
+						fileSize = downloaded;
 						const name = path.basename(mediaPath);
 						if (total == downloaded) {
 							logMessage.success(
-								`file ${name} downloaded successfully`
+								`file ${name} downloaded successfully`,
 							);
 						}
 					},
 				});
 			});
 
-			return true;
+			// Если fileSize не обновился, получаем размер файла из файловой системы
+			if (fileSize === 0 && fs.existsSync(mediaPath)) {
+				fileSize = fs.statSync(mediaPath).size;
+			}
+
+			return { success: true, fileSize };
 		} else {
-			return false;
+			return { success: false, fileSize: 0 };
 		}
 	} catch (err) {
 		logMessage.error(
-			`Error in downloadMessageMedia(): ${err?.message || String(err)}`
+			`Error in downloadMessageMedia(): ${err?.message || String(err)}`,
 		);
-		return false;
+		return { success: false, fileSize: 0 };
 	}
 };
 
@@ -208,18 +282,27 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 		let rawMessagePath = path.join(outputFolder, "raw_message.json");
 		let messageFilePath = path.join(outputFolder, "all_message.json");
 		let totalFetched = 0;
+		let totalMessagesInChannel = 0; // Общее количество сообщений в канале
+		let totalFilesToDownload = 0; // Общее количество файлов для скачивания (оценка)
+		let actualFilesFound = 0; // Фактически найденные файлы для скачивания
 		let queuedDownloads = 0;
 		let successfulDownloads = 0;
 		let failedDownloads = 0;
 		let skippedExisting = 0;
 		let skippedByType = 0;
 		let skippedByTextFilter = 0;
+		let totalBytesDownloaded = 0; // Общее количество скачанных байт
 		const downloadStartedAt = Date.now();
 		let lastProgressLogAt = 0;
+		const speedHistory = []; // История для расчёта скорости за последние 10 секунд
 
 		if (!fs.existsSync(outputFolder)) {
 			fs.mkdirSync(outputFolder, { recursive: true });
 		}
+
+		// Заполняем кэш существующих файлов для быстрой проверки
+		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
+		populateFileCache(outputFolder, mediaTypes);
 
 		while (true) {
 			const inFastForwardRange =
@@ -230,7 +313,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 				: MESSAGE_LIMIT;
 			if (fastForwardMode && !inFastForwardRange) {
 				logMessage.info(
-					`Reached last known position (${lastKnownOffsetId}). Switching to normal batch size ${MESSAGE_LIMIT}`
+					`Reached last known position (${lastKnownOffsetId}). Switching to normal batch size ${MESSAGE_LIMIT}`,
 				);
 				fastForwardMode = false;
 			}
@@ -244,18 +327,27 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 						limit: messageLimit,
 						offsetId: offsetId,
 					});
-				}
+				},
 			);
 			totalFetched += messages.length;
+
+			// Получаем общее количество сообщений в канале из первого ответа
+			if (totalMessagesInChannel === 0 && messages.total > 0) {
+				totalMessagesInChannel = messages.total;
+				logMessage.info(
+					`Total messages in channel: ${totalMessagesInChannel}`,
+				);
+			}
+
 			appendToJSONArrayFile(rawMessagePath, messages);
 			logMessage.info(
 				`getting messages (${totalFetched}/${
 					messages.total
-				}) : ${Math.round((totalFetched * 100) / messages.total)}%`
+				}) : ${Math.round((totalFetched * 100) / messages.total)}%`,
 			);
 			messages = messages.filter(
 				(message) =>
-					message.message != undefined || message.media != undefined
+					message.message != undefined || message.media != undefined,
 			);
 			messages.forEach((message) => {
 				let obj = {
@@ -281,9 +373,75 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 
 			if (messages.length === 0) {
 				logMessage.success(
-					`Done with all messages (${totalFetched}) 100%`
+					`Done with all messages (${totalFetched}) 100%`,
 				);
+				// В конце использу фактическое количество
+				totalFilesToDownload = actualFilesFound;
 				break;
+			}
+
+			// Подсчитываем файлы для скачивания в текущей партии
+			let batchFilesToDownload = 0;
+			for (let i = 0; i < messages.length; i++) {
+				const message = messages[i];
+				if (message.media) {
+					const mediaType = getMediaType(message);
+					const mediaPath = getMediaPath(message, outputFolder);
+					const mediaExtension = path
+						.extname(mediaPath)
+						?.toLowerCase()
+						?.replace(".", "");
+					const shouldDownload =
+						downloadableFiles[mediaType] ||
+						downloadableFiles[mediaExtension] ||
+						downloadableFiles["all"];
+					if (shouldDownload) {
+						batchFilesToDownload += 1;
+					}
+				}
+			}
+
+			// Обновляем фактическое количество найденных файлов
+			actualFilesFound += batchFilesToDownload;
+
+			// Оцениваем общее количество файлов пропорционально
+			// Используем консервативную оценку: требуем минимум 5% сообщений для экстраполяции
+			// Это предотвращает завышение оценки на основе "горячей" начальной части канала
+			if (totalMessagesInChannel > 0 && totalFetched > 0) {
+				const progress = totalFetched / totalMessagesInChannel;
+				if (progress > 0.05) {
+					// Минимум 5% сообщений для надёжной оценки
+					const estimatedTotal = Math.round(
+						actualFilesFound / progress,
+					);
+					// Не даём оценке уменьшаться, но ограничиваем сверху разумным максимумом
+					totalFilesToDownload = Math.min(
+						Math.max(totalFilesToDownload, estimatedTotal),
+						actualFilesFound +
+							(totalMessagesInChannel - totalFetched) * 0.5, // Не более 50% медиа в оставшихся
+					);
+				} else {
+					// При малом количестве сканированных сообщений используем фактическое число
+					// Это предотвращает экстраполяцию на основе первых "горячих" сообщений
+					totalFilesToDownload = Math.max(
+						totalFilesToDownload,
+						actualFilesFound,
+					);
+				}
+			} else {
+				totalFilesToDownload = actualFilesFound;
+			}
+
+			// Логируем оценку каждые 500 сообщений
+			if (totalFetched % 500 < MESSAGE_LIMIT) {
+				// Добавляем информацию о проценте медиа для наглядности
+				const mediaPercent =
+					totalFetched > 0
+						? ((actualFilesFound / totalFetched) * 100).toFixed(1)
+						: 0;
+				logMessage.info(
+					`Files estimate: found=${actualFilesFound}, estimated total=${totalFilesToDownload} (scanned ${totalFetched}/${totalMessagesInChannel}, media rate: ${mediaPercent}%)`,
+				);
 			}
 
 			let activeDownloads = new Set();
@@ -321,14 +479,11 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 						downloadableFiles[mediaType] ||
 						downloadableFiles[mediaExtension] ||
 						downloadableFiles["all"];
-					if (
-						shouldDownload &&
-						!fileExist &&
-						textMatchesFilters
-					) {
+
+					if (shouldDownload && !fileExist && textMatchesFilters) {
 						await wait(0.2);
 						logMessage.info(
-							`Start Downloading file ${mediaPath} (${mediaExtension}) `
+							`Start Downloading file ${mediaPath} (${mediaExtension}) `,
 						);
 						queuedDownloads += 1;
 						let downloadPromise;
@@ -336,16 +491,26 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 							client,
 							message,
 							mediaPath,
-							floodState
+							floodState,
 						)
-							.then((downloaded) => {
-								if (downloaded) {
+							.then((result) => {
+								if (result.success) {
 									successfulDownloads += 1;
+									totalBytesDownloaded += result.fileSize;
+									// Добавляем скачанный файл в кэш
+									if (cachePopulated) {
+										const folderType = filterString(getMediaType(message));
+										const fileSet = fileExistenceCache.get(folderType);
+										if (fileSet) {
+											fileSet.add(path.basename(mediaPath));
+										}
+									}
 								} else {
 									failedDownloads += 1;
 								}
 								const now = Date.now();
-								const finished = successfulDownloads + failedDownloads;
+								const finished =
+									successfulDownloads + failedDownloads;
 								const shouldLogProgress =
 									finished === queuedDownloads ||
 									now - lastProgressLogAt >=
@@ -353,9 +518,11 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 								if (shouldLogProgress) {
 									logDownloadProgress(
 										downloadStartedAt,
-										queuedDownloads,
+										totalFilesToDownload,
 										successfulDownloads,
-										failedDownloads
+										failedDownloads,
+										speedHistory,
+										totalBytesDownloaded,
 									);
 									lastProgressLogAt = now;
 								}
@@ -363,7 +530,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 							.catch(() => {
 								failedDownloads += 1;
 								const now = Date.now();
-								const finished = successfulDownloads + failedDownloads;
+								const finished =
+									successfulDownloads + failedDownloads;
 								const shouldLogProgress =
 									finished === queuedDownloads ||
 									now - lastProgressLogAt >=
@@ -371,9 +539,11 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 								if (shouldLogProgress) {
 									logDownloadProgress(
 										downloadStartedAt,
-										queuedDownloads,
+										totalFilesToDownload,
 										successfulDownloads,
-										failedDownloads
+										failedDownloads,
+										speedHistory,
+										totalBytesDownloaded,
 									);
 									lastProgressLogAt = now;
 								}
@@ -392,9 +562,11 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 						}
 					}
 
-					if (activeDownloads.size >= floodState.currentParallelLimit) {
+					if (
+						activeDownloads.size >= floodState.currentParallelLimit
+					) {
 						logMessage.debug(
-							`Download queue is full (${floodState.currentParallelLimit}). Waiting for next free slot`
+							`Download queue is full (${floodState.currentParallelLimit}). Waiting for next free slot`,
 						);
 						// Скользящее окно: ждём только один завершившийся файл, затем сразу продолжаем.
 						await Promise.race(activeDownloads);
@@ -408,7 +580,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 
 			logMessage.success("Files downloaded successfully");
 			logMessage.info(
-				`Skip summary: existing=${skippedExisting}, byType=${skippedByType}, byTextFilter=${skippedByTextFilter}`
+				`Skip summary: existing=${skippedExisting}, byType=${skippedByType}, byTextFilter=${skippedByTextFilter}`,
 			);
 
 			appendToJSONArrayFile(messageFilePath, allMessages);
@@ -417,9 +589,14 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 			await wait(3);
 		}
 
+		// Очищаем кэш после завершения
+		clearFileCache();
+
 		return true;
 	} catch (err) {
-		logMessage.error(`Error in getMessages(): ${err?.message || String(err)}`);
+		logMessage.error(
+			`Error in getMessages(): ${err?.message || String(err)}`,
+		);
 	}
 };
 
@@ -433,34 +610,60 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 				return client.getMessages(channelId, {
 					ids: messageIds,
 				});
-			}
+			},
 		);
 		let outputFolder = `./export/${channelId}`;
 		if (!fs.existsSync(outputFolder)) {
 			fs.mkdirSync(outputFolder);
 		}
 
+		// Заполняем кэш существующих файлов для быстрой проверки
+		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
+		populateFileCache(outputFolder, mediaTypes);
+
 		let activeDownloads = new Set();
+		let totalFilesToDownload = 0;
 		let queuedDownloads = 0;
 		let successfulDownloads = 0;
 		let failedDownloads = 0;
+		let skippedExisting = 0;
+		let totalBytesDownloaded = 0;
 		const downloadStartedAt = Date.now();
 		let lastProgressLogAt = 0;
+		const speedHistory = [];
+
+		// Сначала подсчитываем общее количество файлов для скачивания
+		for (let i = 0; i < result.length; i++) {
+			const message = result[i];
+			if (message.media) {
+				const fileExist = checkFileExist(message, outputFolder);
+				if (!fileExist) {
+					totalFilesToDownload += 1;
+				} else {
+					skippedExisting += 1;
+				}
+			}
+		}
 
 		for (let i = 0; i < result.length; i++) {
 			let message = result[i];
 			if (message.media) {
+				const fileExist = checkFileExist(message, outputFolder);
+				if (fileExist) {
+					continue; // Пропускаем существующие файлы
+				}
 				queuedDownloads += 1;
 				let downloadPromise;
 				downloadPromise = downloadMessageMedia(
 					client,
 					message,
 					outputFolder,
-					floodState
+					floodState,
 				)
-					.then((downloaded) => {
-						if (downloaded) {
+					.then((result) => {
+						if (result.success) {
 							successfulDownloads += 1;
+							totalBytesDownloaded += result.fileSize;
 						} else {
 							failedDownloads += 1;
 						}
@@ -473,9 +676,11 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 						if (shouldLogProgress) {
 							logDownloadProgress(
 								downloadStartedAt,
-								queuedDownloads,
+								totalFilesToDownload,
 								successfulDownloads,
-								failedDownloads
+								failedDownloads,
+								speedHistory,
+								totalBytesDownloaded,
 							);
 							lastProgressLogAt = now;
 						}
@@ -491,9 +696,11 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 						if (shouldLogProgress) {
 							logDownloadProgress(
 								downloadStartedAt,
-								queuedDownloads,
+								totalFilesToDownload,
 								successfulDownloads,
-								failedDownloads
+								failedDownloads,
+								speedHistory,
+								totalBytesDownloaded,
 							);
 							lastProgressLogAt = now;
 						}
@@ -505,7 +712,7 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 			}
 			if (activeDownloads.size >= floodState.currentParallelLimit) {
 				logMessage.debug(
-					`Download queue is full (${floodState.currentParallelLimit}). Waiting for next free slot`
+					`Download queue is full (${floodState.currentParallelLimit}). Waiting for next free slot`,
 				);
 				await Promise.race(activeDownloads);
 			}
@@ -516,10 +723,15 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 			await Promise.all([...activeDownloads]);
 			logMessage.success("Files downloaded successfully");
 		}
+		logMessage.info(`Skip summary: existing=${skippedExisting}`);
+		
+		// Очищаем кэш после завершения
+		clearFileCache();
+		
 		return true;
 	} catch (err) {
 		logMessage.error(
-			`Error in getMessageDetail(): ${err?.message || String(err)}`
+			`Error in getMessageDetail(): ${err?.message || String(err)}`,
 		);
 	}
 };
@@ -530,7 +742,9 @@ const sendMessage = async (client, channelId, message) => {
 
 		logMessage.success(`Message sent successfully with ID: ${res.id}`);
 	} catch (err) {
-		logMessage.error(`Error in sendMessage(): ${err?.message || String(err)}`);
+		logMessage.error(
+			`Error in sendMessage(): ${err?.message || String(err)}`,
+		);
 	}
 };
 

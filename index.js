@@ -1,4 +1,23 @@
 const fs = require("fs");
+const path = require("path");
+
+// Check if running validator mode
+const args = process.argv.slice(2);
+if (args[0] === "valid") {
+    // Run validator module
+    const { runValidation, parseArgs } = require("./validators");
+    const options = parseArgs();
+    runValidation(options)
+        .then((result) => {
+            process.exit(0);
+        })
+        .catch((err) => {
+            console.error(`Validation failed: ${err.message}`);
+            process.exit(1);
+        });
+    return;
+}
+
 const { getMessages } = require("./modules/messages");
 const { getLastSelection } = require("./utils/file_helper");
 const { initAuth } = require("./modules/auth");

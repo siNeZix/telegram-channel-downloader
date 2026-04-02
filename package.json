@@ -5,12 +5,14 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "valid": "node validators/index.js"
   },
   "nodemonConfig": {
     "ignore": [
       "config.json",
-      "./export/*"
+      "./export/*",
+      "./validators/*"
     ]
   },
   "repository": {

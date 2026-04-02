@@ -2,6 +2,33 @@ const mimeDB = require("mime-db");
 const fs = require("fs");
 const path = require("path");
 
+// Кэш существующих файлов для быстрой проверки
+// Структура: Map<folderType, Set<fileName>>
+let fileExistenceCache = new Map();
+let cachePopulated = false;
+
+const populateFileCache = (outputFolder, mediaTypes) => {
+	if (cachePopulated) return;
+	fileExistenceCache.clear();
+	
+	for (const mediaType of mediaTypes) {
+		const folderType = filterString(mediaType);
+		const folderPath = path.join(outputFolder, folderType);
+		if (fs.existsSync(folderPath)) {
+			const files = fs.readdirSync(folderPath);
+			fileExistenceCache.set(folderType, new Set(files));
+		} else {
+			fileExistenceCache.set(folderType, new Set());
+		}
+	}
+	cachePopulated = true;
+};
+
+const clearFileCache = () => {
+	fileExistenceCache.clear();
+	cachePopulated = false;
+};
+
 const MEDIA_TYPES = {
 	IMAGE: "image",
 	VIDEO: "video",
@@ -76,7 +103,6 @@ const checkFileExist = (message, outputFolder) => {
 	if (!message) return;
 
 	if (message.media) {
-		let isExist = false;
 		let fileName = `file_${message.id}`;
 		if (message.media.document) {
 			let docAttributes = message?.media?.document?.attributes;
@@ -107,13 +133,17 @@ const checkFileExist = (message, outputFolder) => {
 		}
 
 		let folderType = filterString(getMediaType(message));
+		
+		// Используем кэш для быстрой проверки
+		if (cachePopulated) {
+			const fileSet = fileExistenceCache.get(folderType);
+			return fileSet ? fileSet.has(fileName) : false;
+		}
+		
+		// Fallback на fs.existsSync если кэш не заполнен
 		outputFolder = path.join(outputFolder, folderType);
 		let filePath = path.join(outputFolder, fileName);
-		//check if file already exists
-		if (fs.existsSync(filePath)) {
-			isExist = true;
-		}
-		return isExist;
+		return fs.existsSync(filePath);
 	} else {
 		return false;
 	}
@@ -262,5 +292,7 @@ module.exports = {
 	filterString,
 	appendToJSONArrayFile,
 	circularStringify,
+	populateFileCache,
+	clearFileCache,
 	MEDIA_TYPES,
 };
