@@ -8,6 +8,18 @@ let ffmpegPath = null;
 let ffprobePath = null;
 
 /**
+ * Escape path for Windows command line
+ * @param {string} filePath
+ * @returns {string}
+ */
+function escapePathForCmd(filePath) {
+    // Replace single quotes with double quotes for Windows
+    let escaped = filePath.replace(/'/g, "''");
+    // Wrap in double quotes
+    return `"${escaped}"`;
+}
+
+/**
  * Find ffmpeg and ffprobe in system PATH
  * @returns {Promise<{ffmpeg: string, ffprobe: string}|null>}
  */
@@ -50,10 +62,10 @@ async function findFFmpeg() {
 }
 
 /**
- * Execute a command with timeout
+ * Execute a command with timeout and force kill on timeout
  * @param {string} cmd - Command to execute
  * @param {number} timeout - Timeout in milliseconds
- * @returns {Promise<{stdout: string, stderr: string, exitCode: number}>}
+ * @returns {Promise<{stdout: string, stderr: string, exitCode: number, timedOut: boolean}>}
  */
 function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
     return new Promise((resolve) => {
@@ -61,12 +73,29 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
             resolve({
                 stdout: stdout || "",
                 stderr: stderr || "",
-                exitCode: error ? error.code : 0
+                exitCode: error && error.code !== "SIGTERM" && error.code !== "SIGKILL" ? error.code : 0,
+                timedOut: false
             });
         });
 
         proc.on("error", () => {
-            resolve({ stdout: "", stderr: "Process error", exitCode: 1 });
+            resolve({ stdout: "", stderr: "Process error", exitCode: 1, timedOut: false });
+        });
+
+        // Handle timeout - force kill the process
+        proc.on("timeout", () => {
+            // Force kill the process tree on Windows
+            if (process.platform === "win32" && proc.pid) {
+                try {
+                    exec(`taskkill /pid ${proc.pid} /T /F`, () => {});
+                } catch (e) {
+                    // Ignore errors from taskkill
+                }
+            } else {
+                // On Unix, send SIGKILL
+                proc.kill("SIGKILL");
+            }
+            resolve({ stdout: "", stderr: "Validation timed out", exitCode: 1, timedOut: true });
         });
     });
 }
@@ -80,7 +109,9 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 async function validateImage(filePath, ffmpegBin) {
     // ffmpeg -v error -i input.jpg -f null -
     // Exit code 0 means valid, non-zero means error
-    const cmd = `"${ffmpegBin}" -v error -i "${filePath}" -f null -`;
+    const escapedPath = escapePathForCmd(filePath);
+    const escapedFfmpeg = escapePathForCmd(ffmpegBin);
+    const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
 
     const result = await execPromise(cmd, VALIDATION_TIMEOUT);
 
@@ -102,7 +133,9 @@ async function validateImage(filePath, ffmpegBin) {
 async function validateVideo(filePath, ffprobeBin) {
     // ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 input.mp4
     // Exit code 0 with duration output means valid
-    const cmd = `"${ffprobeBin}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
+    const escapedPath = escapePathForCmd(filePath);
+    const escapedFfprobe = escapePathForCmd(ffprobeBin);
+    const cmd = `${escapedFfprobe} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ${escapedPath}`;
 
     const result = await execPromise(cmd, VALIDATION_TIMEOUT);
 
@@ -152,10 +185,10 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin) {
 }
 
 /**
- * Validate multiple files with progress callback
+ * Validate multiple files with progress callback using worker pool
  * @param {Array} files - Array of file objects with path and type
  * @param {Object} ffmpegPaths - {ffmpeg, ffprobe}
- * @param {Function} progressCallback - Called with (validated, total, file, result)
+ * @param {Function} progressCallback - Called with (file, result)
  * @param {number} maxParallel - Max parallel validations (default 10)
  * @returns {Promise<{valid: number, invalid: number, errors: Array}>}
  */
@@ -164,19 +197,26 @@ async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel =
     let invalid = 0;
     const errors = [];
 
-    const total = files.length;
-    let completed = 0;
+    let fileIndex = 0;
 
-    // Process files in batches
-    for (let i = 0; i < files.length; i += maxParallel) {
-        const batch = files.slice(i, i + maxParallel);
-        
-        const batchPromises = batch.map(async (file, batchIndex) => {
+    /**
+     * Worker function that processes files from the queue
+     */
+    async function worker() {
+        while (fileIndex < files.length) {
+            // Get next file index atomically
+            const currentIndex = fileIndex++;
+            
+            // Check if we still have files to process
+            if (currentIndex >= files.length) {
+                break;
+            }
+
+            const file = files[currentIndex];
             const result = await validateFile(file.path, file.type, ffmpegPaths.ffmpeg, ffmpegPaths.ffprobe);
-            const fileIndex = i + batchIndex;
 
             if (progressCallback) {
-                progressCallback(fileIndex + 1, total, file, result);
+                progressCallback(file, result);
             }
 
             if (result.valid) {
@@ -189,12 +229,16 @@ async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel =
                     size: file.size
                 });
             }
-
-            return result;
-        });
-
-        await Promise.all(batchPromises);
+        }
     }
+
+    // Start maxParallel workers
+    const workers = [];
+    for (let i = 0; i < Math.min(maxParallel, files.length); i++) {
+        workers.push(worker());
+    }
+
+    await Promise.all(workers);
 
     return { valid, invalid, errors };
 }
@@ -223,5 +267,6 @@ module.exports = {
     validateFile,
     validateFiles,
     validateImage,
-    validateVideo
+    validateVideo,
+    escapePathForCmd
 };
