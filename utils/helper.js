@@ -2,10 +2,13 @@ const mimeDB = require("mime-db");
 const fs = require("fs");
 const path = require("path");
 
-// Кэш существующих файлов для быстрой проверки
+// Кэш существующих файлов для быстрой проверки (старый)
 // Структура: Map<folderType, Set<fileName>>
 let fileExistenceCache = new Map();
 let cachePopulated = false;
+
+// Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
+let fileCheckCache = new Map();
 
 const populateFileCache = (outputFolder, mediaTypes) => {
 	if (cachePopulated) return;
@@ -99,92 +102,90 @@ const getMediaType = (message) => {
 	return MEDIA_TYPES.OTHERS;
 };
 
-const checkFileExist = (message, outputFolder) => {
-	if (!message) return;
-
-	if (message.media) {
-		let fileName = `file_${message.id}`;
-		if (message.media.document) {
-			let docAttributes = message?.media?.document?.attributes;
-			if (docAttributes) {
-				let fileNameObj = docAttributes.find(
-					(e) => e.className == "DocumentAttributeFilename"
-				);
-				if (fileNameObj) {
-					fileName = `file_${message.id}_${fileNameObj.fileName}`;
-				} else {
-					let ext =
-						mimeDB[message.media.document.mimeType]?.extensions[0];
-					if (ext) {
-						fileName += "." + ext;
-					}
+// Генерация имени файла на основе сообщения (используется в checkFileExist и getMediaPath)
+const buildFileName = (message) => {
+	let fileName = `file_${message.id}`;
+	if (message.media.document) {
+		let docAttributes = message?.media?.document?.attributes;
+		if (docAttributes) {
+			let fileNameObj = docAttributes.find(
+				(e) => e.className == "DocumentAttributeFilename"
+			);
+			if (fileNameObj) {
+				fileName = `file_${message.id}_${fileNameObj.fileName}`;
+			} else {
+				let ext =
+					mimeDB[message.media.document.mimeType]?.extensions[0];
+				if (ext) {
+					fileName += "." + ext;
 				}
 			}
 		}
-
-		if (message.media.video) {
-			fileName = fileName + ".mp4";
-		}
-		if (message.media.audio) {
-			fileName = fileName + ".mp3";
-		}
-		if (message.media.photo) {
-			fileName = fileName + ".jpg";
-		}
-
-		let folderType = filterString(getMediaType(message));
-		
-		// Используем кэш для быстрой проверки
-		if (cachePopulated) {
-			const fileSet = fileExistenceCache.get(folderType);
-			return fileSet ? fileSet.has(fileName) : false;
-		}
-		
-		// Fallback на fs.existsSync если кэш не заполнен
-		outputFolder = path.join(outputFolder, folderType);
-		let filePath = path.join(outputFolder, fileName);
-		return fs.existsSync(filePath);
-	} else {
-		return false;
 	}
+
+	if (message.media.video) {
+		fileName = fileName + ".mp4";
+	}
+	if (message.media.audio) {
+		fileName = fileName + ".mp3";
+	}
+	if (message.media.photo) {
+		fileName = fileName + ".jpg";
+	}
+
+	return fileName;
+};
+
+// Проверка существования файла с кэшированием и проверкой размера
+const checkFileExist = (message, outputFolder) => {
+	if (!message) return false;
+
+	if (!message.media) return false;
+
+	const fileName = buildFileName(message);
+	const folderType = filterString(getMediaType(message));
+	const filePath = path.join(outputFolder, folderType, fileName);
+
+	// Проверяем кэш
+	if (fileCheckCache.has(filePath)) {
+		const cached = fileCheckCache.get(filePath);
+		return cached.exists && cached.size > 0;
+	}
+
+	// Проверяем файл
+	try {
+		if (fs.existsSync(filePath)) {
+			const stats = fs.statSync(filePath);
+			const exists = stats.size > 0;
+			fileCheckCache.set(filePath, { exists, size: stats.size });
+			return exists;
+		}
+	} catch (err) {
+		logMessage.error(`Error checking file ${filePath}: ${err.message}`);
+	}
+
+	fileCheckCache.set(filePath, { exists: false, size: 0 });
+	return false;
+};
+
+// Очистка кэша проверки файлов
+const clearFileCheckCache = () => {
+	fileCheckCache.clear();
+};
+
+// Добавление файла в кэш после скачивания
+const addFileToCheckCache = (filePath, size) => {
+	fileCheckCache.set(filePath, { exists: true, size });
 };
 
 const getMediaPath = (message, outputFolder) => {
 	if (!message) return;
 
 	if (message.media) {
-		let fileName = `file_${message.id}`;
-		if (message.media.document) {
-			let docAttributes = message?.media?.document?.attributes;
-			if (docAttributes) {
-				let fileNameObj = docAttributes.find(
-					(e) => e.className == "DocumentAttributeFilename"
-				);
-				if (fileNameObj) {
-					fileName = `file_${message.id}_${fileNameObj.fileName}`;
-				} else {
-					let ext =
-						mimeDB[message.media.document.mimeType]?.extensions[0];
-					if (ext) {
-						fileName += "." + ext;
-					}
-				}
-			}
-		}
-
-		if (message.media.video) {
-			fileName = fileName + ".mp4";
-		}
-		if (message.media.audio) {
-			fileName = fileName + ".mp3";
-		}
-		if (message.media.photo) {
-			fileName = fileName + ".jpg";
-		}
-
-		let folderType = filterString(getMediaType(message));
+		const fileName = buildFileName(message);
+		const folderType = filterString(getMediaType(message));
 		outputFolder = path.join(outputFolder, folderType);
-		let filePath = path.join(outputFolder, fileName);
+		const filePath = path.join(outputFolder, fileName);
 		//check if file already exists
 		// if (fs.existsSync(filePath)) {
 		// 	logMessage.info(`File already exists: ${filePath}, Changing name`);
@@ -264,21 +265,48 @@ const circularStringify = (circularString, indent = 2) => {
 
 const appendToJSONArrayFile = (filePath, dataToAppend) => {
 	try {
-		if (!fs.existsSync(filePath)) {
-			fs.writeFileSync(
-				filePath,
-				circularStringify([dataToAppend], null, 2)
-			);
-		} else {
-			fs.readFile(filePath, function (err, data) {
-				var json = JSON.parse(data);
-				json.push(dataToAppend);
-				fs.writeFileSync(filePath, circularStringify(json, null, 2));
-			});
-		}
+		// JSON Lines формат: каждая пачка как отдельная строка
+		// O(1) операция - не зависит от размера файла
+		const line = circularStringify(dataToAppend) + '\n';
+		fs.appendFileSync(filePath, line);
 	} catch (e) {
-		logMessage.error(`Error appending to JSON Array file ${filePath}`);
+		logMessage.error(`Error appending to JSON file ${filePath}: ${e.message}`);
 		console.log(e);
+	}
+};
+
+/**
+ * Читает JSON Lines файл и возвращает массив всех объектов
+ * @param {string} filePath - путь к файлу
+ * @returns {Array} - массив объектов
+ */
+const readJSONLinesFile = (filePath) => {
+	try {
+		if (!fs.existsSync(filePath)) {
+			return [];
+		}
+		
+		const content = fs.readFileSync(filePath, 'utf8');
+		const lines = content.split('\n').filter(line => line.trim());
+		
+		const result = [];
+		for (const line of lines) {
+			try {
+				const parsed = JSON.parse(line);
+				if (Array.isArray(parsed)) {
+					result.push(...parsed);
+				} else {
+					result.push(parsed);
+				}
+			} catch (e) {
+				logMessage.warn(`Failed to parse line in ${filePath}: ${e.message}`);
+			}
+		}
+		
+		return result;
+	} catch (e) {
+		logMessage.error(`Error reading JSON Lines file ${filePath}: ${e.message}`);
+		return [];
 	}
 };
 
@@ -291,8 +319,12 @@ module.exports = {
 	wait,
 	filterString,
 	appendToJSONArrayFile,
+	readJSONLinesFile,
 	circularStringify,
 	populateFileCache,
 	clearFileCache,
+	clearFileCheckCache,
+	addFileToCheckCache,
+	buildFileName,
 	MEDIA_TYPES,
 };

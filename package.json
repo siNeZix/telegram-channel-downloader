@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "valid": "node validators/index.js"
+    "valid": "node validators/index.js",
+    "migrate": "node -e \"require('./utils/migration').migrateExportFiles()\""
   },
   "nodemonConfig": {
     "ignore": [

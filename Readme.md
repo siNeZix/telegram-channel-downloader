@@ -42,6 +42,47 @@ Once the setup is complete, you can start using the Telegram Channel Downloader:
 - **Session Handling**: The `sessionId` field in the `config.json` file will be automatically updated after logging in for the first time. This session ID is used for subsequent logins to avoid re-entering your credentials.
 - **Media Types**: The Telegram Channel Downloader supports downloading various types of media files, including images, videos, audio files, documents, and other attachments shared within the specified channel, group, or user.
 
+## Формат файлов экспорта
+
+### raw_message.json и all_message.json
+
+Файлы используют **JSON Lines** формат для оптимизации производительности.
+
+**Формат:**
+- Каждая пачка сообщений записывается как отдельная строка
+- Каждая строка — валидный JSON массив объектов
+- Строки разделены символом новой строки `\n`
+
+**Пример:**
+```json
+[{"id":1,"message":"text1","date":"2024-01-01"}]
+[{"id":2,"message":"text2","date":"2024-01-02"}]
+```
+
+**Преимущества:**
+- Запись за < 1 секунды (вместо 2-4 минут)
+- Минимальное использование памяти
+- Не зависит от размера файла
+
+### Чтение файлов
+
+Для чтения JSON Lines файлов используйте функцию `readJSONLinesFile()`:
+
+```javascript
+const { readJSONLinesFile } = require('./utils/helper');
+
+const messages = readJSONLinesFile('path/to/raw_message.json');
+console.log(`Total messages: ${messages.length}`);
+```
+
+### Миграция старых файлов
+
+Для конвертации существующих JSON Array файлов в JSON Lines:
+
+```bash
+npm run migrate
+```
+
 ## Contributing
 Contributions are welcome! If you have any suggestions, bug reports, or feature requests, please open an issue or submit a pull request.
 

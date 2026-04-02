@@ -9,12 +9,18 @@ const {
 	getMediaPath,
 	populateFileCache,
 	clearFileCache,
+	clearFileCheckCache,
+	addFileToCheckCache,
+	buildFileName,
 	filterString,
 } = require("../utils/helper");
 const {
 	getLastSelection,
 	updateLastSelection,
 } = require("../utils/file_helper");
+const {
+	deduplicateChannelFiles,
+} = require("../utils/migration");
 const path = require("path");
 
 const MAX_PARALLEL_DOWNLOAD = 20;
@@ -24,10 +30,24 @@ const MESSAGE_LIMIT = 200;
 // но логика оставлена в коде и может быть легко включена.
 const ENABLE_TEXT_FILTERS = false;
 const MIN_PARALLEL_DOWNLOAD = 2;
-const BASE_RPC_DELAY_SECONDS = 0.15;
+const BASE_RPC_DELAY_SECONDS = 0.05;
 const MAX_RPC_RETRIES = 5;
 const PROGRESS_LOG_INTERVAL_SECONDS = 5;
 const FAST_FORWARD_MESSAGE_LIMIT = 1000;
+
+// Интервалы для логирования прогресса проверки файлов
+const CHECK_PROGRESS_INTERVAL_FILES = 100;
+const CHECK_PROGRESS_INTERVAL_MS = 5000;
+
+// Логирование прогресса проверки файлов
+const logCheckProgress = (checked, total, skipped, newFiles, startedAt) => {
+	const percent = total > 0 ? Math.round((checked * 100) / total) : 100;
+	const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+	const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
+	logMessage.info(
+		`[${timestamp}] Check progress: ${checked}/${total} (${percent}%), skipped: ${skipped}, new: ${newFiles}, elapsed: ${elapsed}s`,
+	);
+};
 
 // Всегда начинаем с самого начала истории канала.
 let { messageOffsetId } = { messageOffsetId: 0 };
@@ -143,12 +163,6 @@ const parseFloodWaitSeconds = (err) => {
 	return null;
 };
 
-const sleepWithFloodBuffer = async (seconds) => {
-	const waitSeconds = Math.max(1, Math.ceil(seconds) + 2);
-	logMessage.info(`Flood protection: sleeping ${waitSeconds}s before retry`);
-	await wait(waitSeconds);
-};
-
 const createFloodState = () => ({
 	cooldownUntil: 0,
 	currentParallelLimit: MAX_PARALLEL_DOWNLOAD,
@@ -196,11 +210,11 @@ const runWithFloodControl = async (state, label, fn) => {
 					MIN_PARALLEL_DOWNLOAD,
 					state.currentParallelLimit - 1,
 				);
-				state.cooldownUntil = Date.now() + (floodSeconds + 2) * 1000;
+				state.cooldownUntil = Date.now() + (floodSeconds + 1) * 1000;
 				logMessage.error(
 					`Flood detected in ${label}. Wait ${floodSeconds}s, retry ${attempt}/${MAX_RPC_RETRIES}. Parallel limit now ${state.currentParallelLimit}`,
 				);
-				await sleepWithFloodBuffer(floodSeconds);
+				// Не ждём здесь - maybeWaitCooldown в следующей итерации сам подождёт
 				continue;
 			}
 			throw err;
@@ -302,6 +316,12 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 			fs.mkdirSync(outputFolder, { recursive: true });
 		}
 
+		// Единоразовая очистка дубликатов при старте
+		deduplicateChannelFiles(outputFolder);
+
+		// Set для отслеживания уже записанных ID (предотвращение дубликатов в сессии)
+		const knownMessageIds = new Set();
+
 		// Заполняем кэш существующих файлов для быстрой проверки
 		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
 		populateFileCache(outputFolder, mediaTypes);
@@ -352,6 +372,12 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 					message.message != undefined || message.media != undefined,
 			);
 			messages.forEach((message) => {
+				// Пропускаем дубликаты в текущей сессии
+				if (knownMessageIds.has(message.id)) {
+					return;
+				}
+				knownMessageIds.add(message.id);
+
 				let obj = {
 					id: message.id,
 					message: message.message,
@@ -382,8 +408,14 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 				break;
 			}
 
-			// Подсчитываем файлы для скачивания в текущей партии
+			// Подсчитываем файлы для скачивания в текущей партии и проверяем существование
 			let batchFilesToDownload = 0;
+			let batchSkippedExisting = 0;
+			let batchNewFiles = 0;
+			const checkStartedAt = Date.now();
+			let lastCheckProgressLogAt = 0;
+			let checkedFiles = 0;
+
 			for (let i = 0; i < messages.length; i++) {
 				const message = messages[i];
 				if (message.media) {
@@ -398,13 +430,50 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 						downloadableFiles[mediaExtension] ||
 						downloadableFiles["all"];
 					if (shouldDownload) {
-						batchFilesToDownload += 1;
+						// Проверяем существование файла и кэшируем результат
+						const fileExist = checkFileExist(message, outputFolder);
+						message._fileExist = fileExist; // Кэшируем для последующего использования
+						checkedFiles += 1;
+
+						// Логирование прогресса проверки
+						const shouldLogCheck =
+							checkedFiles % CHECK_PROGRESS_INTERVAL_FILES === 0 ||
+							Date.now() - lastCheckProgressLogAt >= CHECK_PROGRESS_INTERVAL_MS;
+						if (shouldLogCheck) {
+							logCheckProgress(
+								checkedFiles,
+								messages.filter(m => m.media).length,
+								batchSkippedExisting,
+								batchNewFiles,
+								checkStartedAt,
+							);
+							lastCheckProgressLogAt = Date.now();
+						}
+
+						if (fileExist) {
+							batchSkippedExisting += 1;
+							logMessage.debug(`File exists: ${path.basename(mediaPath)} (skipped)`);
+						} else {
+							batchNewFiles += 1;
+							batchFilesToDownload += 1;
+						}
 					}
 				}
 			}
 
-			// Обновляем фактическое количество найденных файлов
-			actualFilesFound += batchFilesToDownload;
+			// Финальный лог прогресса проверки
+			if (checkedFiles > 0) {
+				logCheckProgress(
+					checkedFiles,
+					messages.filter(m => m.media).length,
+					batchSkippedExisting,
+					batchNewFiles,
+					checkStartedAt,
+				);
+			}
+
+			// Обновляем фактическое количество найденных файлов (включая пропущенные)
+			actualFilesFound += batchFilesToDownload + batchSkippedExisting;
 
 			// Оцениваем общее количество файлов пропорционально
 			// Используем консервативную оценку: требуем минимум 5% сообщений для экстраполяции
@@ -452,7 +521,10 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 				if (message.media) {
 					const mediaType = getMediaType(message);
 					const mediaPath = getMediaPath(message, outputFolder);
-					const fileExist = checkFileExist(message, outputFolder);
+					// Используем кэшированный результат проверки вместо повторного вызова
+					const fileExist = message._fileExist !== undefined
+						? message._fileExist
+						: checkFileExist(message, outputFolder);
 
 					const mediaExtension = path
 						.extname(mediaPath)
@@ -499,14 +571,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 								if (result.success) {
 									successfulDownloads += 1;
 									totalBytesDownloaded += result.fileSize;
-									// Добавляем скачанный файл в кэш
-									if (cachePopulated) {
-										const folderType = filterString(getMediaType(message));
-										const fileSet = fileExistenceCache.get(folderType);
-										if (fileSet) {
-											fileSet.add(path.basename(mediaPath));
-										}
-									}
+									// Добавляем скачанный файл в кэш проверки
+									addFileToCheckCache(mediaPath, result.fileSize);
 								} else {
 									failedDownloads += 1;
 								}
@@ -580,6 +646,9 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 				await Promise.all([...activeDownloads]);
 			}
 
+			// Обновляем общую статистику пропущенных из текущей пачки
+			skippedExisting += batchSkippedExisting;
+
 			logMessage.success("Files downloaded successfully");
 			logMessage.info(
 				`Skip summary: existing=${skippedExisting}, byType=${skippedByType}, byTextFilter=${skippedByTextFilter}`,
@@ -591,8 +660,9 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 			await wait(3);
 		}
 
-		// Очищаем кэш после завершения
+		// Очищаем кэши после завершения
 		clearFileCache();
+		clearFileCheckCache();
 
 		return true;
 	} catch (err) {
@@ -634,38 +704,79 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 		let lastProgressLogAt = 0;
 		const speedHistory = [];
 
-		// Сначала подсчитываем общее количество файлов для скачивания
+		// Подсчитываем файлы и проверяем существование с прогресс-логированием
+		const checkStartedAt = Date.now();
+		let lastCheckProgressLogAt = 0;
+		let checkedFiles = 0;
+		const totalMediaMessages = result.filter(m => m.media).length;
+
 		for (let i = 0; i < result.length; i++) {
 			const message = result[i];
 			if (message.media) {
 				const fileExist = checkFileExist(message, outputFolder);
+				message._fileExist = fileExist; // Кэшируем результат
+				checkedFiles += 1;
+
+				// Логирование прогресса проверки
+				const shouldLogCheck =
+					checkedFiles % CHECK_PROGRESS_INTERVAL_FILES === 0 ||
+					Date.now() - lastCheckProgressLogAt >= CHECK_PROGRESS_INTERVAL_MS;
+				if (shouldLogCheck) {
+					logCheckProgress(
+						checkedFiles,
+						totalMediaMessages,
+						skippedExisting,
+						totalFilesToDownload,
+						checkStartedAt,
+					);
+					lastCheckProgressLogAt = Date.now();
+				}
+
 				if (!fileExist) {
 					totalFilesToDownload += 1;
 				} else {
 					skippedExisting += 1;
+					logMessage.debug(`File exists: ${path.basename(getMediaPath(message, outputFolder))} (skipped)`);
 				}
 			}
+		}
+
+		// Финальный лог прогресса проверки
+		if (checkedFiles > 0) {
+			logCheckProgress(
+				checkedFiles,
+				totalMediaMessages,
+				skippedExisting,
+				totalFilesToDownload,
+				checkStartedAt,
+			);
 		}
 
 		for (let i = 0; i < result.length; i++) {
 			let message = result[i];
 			if (message.media) {
-				const fileExist = checkFileExist(message, outputFolder);
+				// Используем кэшированный результат проверки
+				const fileExist = message._fileExist !== undefined
+					? message._fileExist
+					: checkFileExist(message, outputFolder);
 				if (fileExist) {
 					continue; // Пропускаем существующие файлы
 				}
 				queuedDownloads += 1;
+				const mediaPath = getMediaPath(message, outputFolder);
 				let downloadPromise;
 				downloadPromise = downloadMessageMedia(
 					client,
 					message,
-					outputFolder,
+					mediaPath,
 					floodState,
 				)
 					.then((result) => {
 						if (result.success) {
 							successfulDownloads += 1;
 							totalBytesDownloaded += result.fileSize;
+							// Добавляем скачанный файл в кэш проверки
+							addFileToCheckCache(mediaPath, result.fileSize);
 						} else {
 							failedDownloads += 1;
 						}
@@ -727,8 +838,9 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 		}
 		logMessage.info(`Skip summary: existing=${skippedExisting}`);
 		
-		// Очищаем кэш после завершения
+		// Очищаем кэши после завершения
 		clearFileCache();
+		clearFileCheckCache();
 		
 		return true;
 	} catch (err) {
