@@ -10,6 +10,11 @@ let cachePopulated = false;
 // Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
 let fileCheckCache = new Map();
 
+// Кэш снимков: Map<channelPath, Set<relativeFilePath>>
+let snapshotsCache = new Map();
+
+const SNAPSHOTS_DIR = "snapshots";
+
 const populateFileCache = (outputFolder, mediaTypes) => {
 	if (cachePopulated) return;
 	fileExistenceCache.clear();
@@ -136,6 +141,49 @@ const buildFileName = (message) => {
 	return fileName;
 };
 
+/**
+ * Load and cache snapshots from the snapshots directory for a given channel path
+ * @param {string} channelPath - Path to the channel folder
+ * @returns {Set<string>} Set of relative file paths from all snapshots
+ */
+const loadSnapshots = (channelPath) => {
+	if (snapshotsCache.has(channelPath)) {
+		return snapshotsCache.get(channelPath);
+	}
+
+	const snapshotsPath = path.join(channelPath, SNAPSHOTS_DIR);
+	const fixedFiles = new Set();
+
+	if (!fs.existsSync(snapshotsPath)) {
+		snapshotsCache.set(channelPath, fixedFiles);
+		return fixedFiles;
+	}
+
+	try {
+		const files = fs.readdirSync(snapshotsPath);
+		for (const file of files) {
+			if (!file.endsWith(".json")) continue;
+			const filePath = path.join(snapshotsPath, file);
+			try {
+				const content = fs.readFileSync(filePath, "utf8");
+				const snapshot = JSON.parse(content);
+				if (snapshot.files) {
+					for (const filePath in snapshot.files) {
+						fixedFiles.add(filePath);
+					}
+				}
+			} catch (e) {
+				// Skip invalid JSON files
+			}
+		}
+	} catch (e) {
+		logMessage.error(`Error reading snapshots from ${snapshotsPath}: ${e.message}`);
+	}
+
+	snapshotsCache.set(channelPath, fixedFiles);
+	return fixedFiles;
+};
+
 // Проверка существования файла с кэшированием и проверкой размера
 const checkFileExist = (message, outputFolder) => {
 	if (!message) return false;
@@ -145,6 +193,7 @@ const checkFileExist = (message, outputFolder) => {
 	const fileName = buildFileName(message);
 	const folderType = filterString(getMediaType(message));
 	const filePath = path.join(outputFolder, folderType, fileName);
+	const relativePath = path.join(folderType, fileName);
 
 	// Проверяем кэш
 	if (fileCheckCache.has(filePath)) {
@@ -164,6 +213,13 @@ const checkFileExist = (message, outputFolder) => {
 		logMessage.error(`Error checking file ${filePath}: ${err.message}`);
 	}
 
+	// Проверяем в снимках
+	const snapshots = loadSnapshots(outputFolder);
+	if (snapshots.has(relativePath)) {
+		fileCheckCache.set(filePath, { exists: true, size: 1 }); // Кэшируем как существующий
+		return true;
+	}
+
 	fileCheckCache.set(filePath, { exists: false, size: 0 });
 	return false;
 };
@@ -171,6 +227,11 @@ const checkFileExist = (message, outputFolder) => {
 // Очистка кэша проверки файлов
 const clearFileCheckCache = () => {
 	fileCheckCache.clear();
+};
+
+// Очистка кэша снимков
+const clearSnapshotsCache = () => {
+	snapshotsCache.clear();
 };
 
 // Добавление файла в кэш после скачивания
@@ -324,6 +385,7 @@ module.exports = {
 	populateFileCache,
 	clearFileCache,
 	clearFileCheckCache,
+	clearSnapshotsCache,
 	addFileToCheckCache,
 	buildFileName,
 	MEDIA_TYPES,

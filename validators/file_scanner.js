@@ -14,7 +14,7 @@ const SUPPORTED_EXTENSIONS = new Set([
     ...VIDEO_EXTENSIONS
 ]);
 
-const IGNORED_DIRS = new Set(["node_modules", ".git"]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", "snapshots"]);
 const IGNORED_EXTENSIONS = new Set(["json", "txt", "html", "css", "js"]);
 
 /**
