@@ -3,7 +3,6 @@ const {
 	getMediaType,
 	logMessage,
 	wait,
-	appendToJSONArrayFile,
 	circularStringify,
 	checkFileExist,
 	getMediaPath,
@@ -21,6 +20,7 @@ const {
 const {
 	deduplicateChannelFiles,
 } = require("../utils/migration");
+const db = require("../utils/db");
 const path = require("path");
 
 const MAX_PARALLEL_DOWNLOAD = 20;
@@ -321,6 +321,9 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 		// Единоразовая очистка дубликатов при старте
 		deduplicateChannelFiles(outputFolder);
 
+		// Инициализируем SQLite базу данных для этого канала
+		db.initDatabase(channelId, outputFolder);
+
 		// Set для отслеживания уже записанных ID (предотвращение дубликатов в сессии)
 		const knownMessageIds = new Set();
 
@@ -367,7 +370,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 				);
 			}
 
-			appendToJSONArrayFile(rawMessagePath, messages);
+			// Сохраняем сырые сообщения в SQLite для оптимизации (вместо JSON файлов)
+			db.saveMessages(channelId, outputFolder, messages, []);
 			logMessage.info(
 				`getting messages (${totalFetched}/${
 					messages.total
@@ -653,7 +657,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 			// Обновляем общую статистику пропущенных из текущей пачки
 			skippedExisting += batchSkippedExisting;
 
-			appendToJSONArrayFile(messageFilePath, allMessages);
+			// Сохраняем обработанные сообщения в SQLite (сырые уже сохранены выше)
+			db.saveMessages(channelId, outputFolder, messages, allMessages);
 			offsetId = messages[messages.length - 1].id;
 			updateLastSelection({ messageOffsetId: offsetId });
 			// Убран wait(3) для оптимизации - новые сообщения запрашиваются сразу
@@ -673,15 +678,18 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 			`Total: fetched=${totalFetched}, downloaded=${successfulDownloads}, failed=${failedDownloads}, skipped=${skippedExisting}`,
 		);
 
-		// Очищаем кэши после завершения
+		// Очищаем кэши и закрываем соединение с БД после завершения
 		clearFileCache();
 		clearFileCheckCache();
+		db.closeDatabase(outputFolder);
 
 		return true;
 	} catch (err) {
 		logMessage.error(
 			`Error in getMessages(): ${err?.message || String(err)}`,
 		);
+		// Закрываем БД в случае ошибки
+		db.closeDatabase(outputFolder);
 	}
 };
 
@@ -701,7 +709,10 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 		if (!fs.existsSync(outputFolder)) {
 			fs.mkdirSync(outputFolder);
 		}
-
+	
+		// Инициализируем SQLite базу данных для этого канала
+		db.initDatabase(channelId, outputFolder);
+	
 		// Заполняем кэш существующих файлов для быстрой проверки
 		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
 		populateFileCache(outputFolder, mediaTypes);
@@ -855,15 +866,18 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 		}
 		logMessage.info(`Skip summary: existing=${skippedExisting}`);
 		
-		// Очищаем кэши после завершения
+		// Очищаем кэши и закрываем соединение с БД после завершения
 		clearFileCache();
 		clearFileCheckCache();
+		db.closeDatabase(outputFolder);
 		
 		return true;
 	} catch (err) {
 		logMessage.error(
 			`Error in getMessageDetail(): ${err?.message || String(err)}`,
 		);
+		// Закрываем БД в случае ошибки
+		db.closeDatabase(outputFolder);
 	}
 };
 
