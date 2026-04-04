@@ -758,8 +758,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		logMessage.error(
 			`Error in getMessages(): ${err?.message || String(err)}`,
 		);
-		// Закрываем БД в случае ошибки, только если outputFolder был инициализирован
-		if (outputFolder) {
+		if (typeof outputFolder !== 'undefined') {
 			db.closeDatabase(outputFolder);
 		}
 	}

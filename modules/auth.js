@@ -39,15 +39,32 @@ const parseFloodWaitSeconds = (err) => {
 };
 
 const initAuth = async (otpPreference = OTP_METHOD.APP) => {
+	// Debug: Check what credentials we have
+	console.log('[DEBUG] initAuth called');
+	const credentials = getCredentials();
+	console.log('[DEBUG] credentials:', JSON.stringify(credentials));
+	const { apiId, apiHash, sessionId } = credentials;
+	console.log('[DEBUG] apiId:', apiId, 'apiHash:', apiHash ? '***' : 'undefined', 'sessionId:', sessionId ? '***' : 'undefined');
+	
+	if (!apiId || !apiHash) {
+		console.error('[ERROR] Missing apiId or apiHash in credentials');
+		throw new Error('Missing apiId or apiHash in config.json');
+	}
+	
+	// Create StringSession from sessionId or use empty string for new session
+	const stringSession = sessionId ? new StringSession(sessionId) : new StringSession('');
+	console.log('[DEBUG] StringSession created:', stringSession ? 'yes' : 'no');
+	
 	const client = new TelegramClient(stringSession, apiId, apiHash, {
 		connectionRetries: 5,
 		baseLogger: new Logger("error"),
-		deviceModel: "PC", // Маскируемся под ПК
-		systemVersion: "Windows 11", // Указываем правдоподобную ОС
-		appVersion: "4.8.1", // Версия официального Telegram Desktop
+		deviceModel: "PC",
+		systemVersion: "Windows 11",
+		appVersion: "4.8.1",
 		langCode: "en",
 		systemLangCode: "en",
 	});
+	
 	try {
 		if (!sessionId) {
 			otpPreference = await selectInput(

@@ -162,5 +162,6 @@ module.exports = {
     getSupportedExtensions,
     filterByType,
     IMAGE_EXTENSIONS,
-    VIDEO_EXTENSIONS
+    VIDEO_EXTENSIONS,
+    IGNORED_DIRS
 };

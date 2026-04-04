@@ -333,6 +333,7 @@ module.exports = {
 	clearSnapshotsCache,
 	addFileToCheckCache,
 	buildFileName,
+	loadSnapshots,
 	MEDIA_TYPES,
 	fileCheckCache,
 };
