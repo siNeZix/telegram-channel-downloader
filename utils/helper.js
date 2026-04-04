@@ -389,4 +389,5 @@ module.exports = {
 	addFileToCheckCache,
 	buildFileName,
 	MEDIA_TYPES,
+	fileCheckCache,
 };

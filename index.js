@@ -3,10 +3,27 @@ const path = require("path");
 
 // Check if running validator mode
 const args = process.argv.slice(2);
+if (args.length > 0) {
+    console.log(`[DEBUG] Received arguments: ${args.join(", ")}`);
+}
+
+// Parse --check and --deep-check flags (used during normal download to validate existing files)
+const checkIndex = args.indexOf("--check");
+const deepCheckIndex = args.indexOf("--deep-check");
+const checkMode = deepCheckIndex !== -1 ? "deep" : (checkIndex !== -1 ? "fast" : "none");
+
+// Remove check flags from args
+if (checkIndex !== -1) args.splice(checkIndex, 1);
+if (deepCheckIndex !== -1) args.splice(deepCheckIndex, 1);
+
 if (args[0] === "valid") {
     // Run validator module
     const { runValidation, parseArgs } = require("./validators");
     const options = parseArgs();
+    // If --deep-check was passed with valid command, enable deep validation
+    if (checkMode === "deep") {
+        options.deep = true;
+    }
     runValidation(options)
         .then((result) => {
             process.exit(0);
@@ -48,7 +65,7 @@ var client = null;
     }
   }
   const downloadableFiles = await downloadOptionInput();
-  await getMessages(client, channelId, downloadableFiles);
+  await getMessages(client, channelId, downloadableFiles, { check: checkMode !== "none", deep: checkMode === "deep" });
   await client.disconnect();
 
   process.exit(0);

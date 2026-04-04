@@ -12,6 +12,7 @@ const {
 	addFileToCheckCache,
 	buildFileName,
 	filterString,
+	fileCheckCache,
 } = require("../utils/helper");
 const {
 	getLastSelection,
@@ -22,6 +23,9 @@ const {
 } = require("../utils/migration");
 const db = require("../utils/db");
 const path = require("path");
+
+// Import validators for deep file checking
+const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
 const MAX_PARALLEL_DOWNLOAD = 20;
 const MESSAGE_LIMIT = 200;
@@ -291,7 +295,24 @@ const downloadMessageMedia = async (client, message, mediaPath, floodState) => {
 	}
 };
 
-const getMessages = async (client, channelId, downloadableFiles = {}) => {
+const getMessages = async (client, channelId, downloadableFiles = {}, options = {}) => {
+	const { check: enableCheck = false, deep: deepValidation = false } = options;
+
+	// Initialize FFmpeg for validation if needed
+	let ffmpegPaths = null;
+	if (enableCheck) {
+		const ffmpegAvailable = await isFFmpegAvailable();
+		if (!ffmpegAvailable) {
+			logMessage.warn(`ffmpeg not found, skipping file validation`);
+		} else {
+			ffmpegPaths = await getFFmpegPaths();
+			if (deepValidation) {
+				logMessage.info(`File validation: ENABLED (DEEP mode - full decode)`);
+			} else {
+				logMessage.info(`File validation: ENABLED (FAST mode - headers only)`);
+			}
+		}
+	}
 	try {
 		const floodState = createFloodState();
 		let offsetId = messageOffsetId;
@@ -441,10 +462,42 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 						downloadableFiles["all"];
 					if (shouldDownload) {
 						// Проверяем существование файла и кэшируем результат
-						const fileExist = checkFileExist(message, outputFolder);
+						let fileExist = checkFileExist(message, outputFolder);
+	
+						// Validation: if file exists and check is enabled, validate it
+						if (fileExist && enableCheck && ffmpegPaths) {
+							const fileType = mediaType.toLowerCase().includes("video") ? "video" : "image";
+							if (deepValidation) {
+								logMessage.info(`Checking (deep): ${path.basename(mediaPath)}...`);
+							}
+							const validationResult = await validateFile(
+								mediaPath,
+								fileType,
+								ffmpegPaths.ffmpeg,
+								ffmpegPaths.ffprobe,
+								deepValidation // true for deep, false for fast
+							);
+	
+							if (!validationResult.valid) {
+								logMessage.warn(`File failed validation: ${path.basename(mediaPath)} - ${validationResult.error}`);
+								logMessage.info(`Will re-download: ${path.basename(mediaPath)}`);
+								fileExist = false;
+								// Remove invalid file so it can be re-downloaded
+								try {
+									if (fs.existsSync(mediaPath)) {
+										fs.unlinkSync(mediaPath);
+									}
+								} catch (e) {
+									logMessage.error(`Failed to delete invalid file: ${e.message}`);
+								}
+								// Clear from cache so it's not used
+								fileCheckCache.delete(mediaPath);
+							}
+						}
+	
 						message._fileExist = fileExist; // Кэшируем для последующего использования
 						checkedFiles += 1;
-
+	
 						// Логирование прогресса проверки
 						const shouldLogCheck =
 							checkedFiles % CHECK_PROGRESS_INTERVAL_FILES === 0 ||
@@ -459,7 +512,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 							);
 							lastCheckProgressLogAt = Date.now();
 						}
-
+	
 						if (fileExist) {
 							batchSkippedExisting += 1;
 							logMessage.debug(`File exists: ${path.basename(mediaPath)} (skipped)`);
@@ -693,7 +746,25 @@ const getMessages = async (client, channelId, downloadableFiles = {}) => {
 	}
 };
 
-const getMessageDetail = async (client, channelId, messageIds) => {
+const getMessageDetail = async (client, channelId, messageIds, options = {}) => {
+	const { check: enableCheck = false, deep: deepValidation = false } = options;
+
+	// Initialize FFmpeg for validation if needed
+	let ffmpegPaths = null;
+	if (enableCheck) {
+		const ffmpegAvailable = await isFFmpegAvailable();
+		if (!ffmpegAvailable) {
+			logMessage.warn(`ffmpeg not found, skipping file validation`);
+		} else {
+			ffmpegPaths = await getFFmpegPaths();
+			if (deepValidation) {
+				logMessage.info(`File validation: ENABLED (DEEP mode - full decode)`);
+			} else {
+				logMessage.info(`File validation: ENABLED (FAST mode - headers only)`);
+			}
+		}
+	}
+
 	try {
 		const floodState = createFloodState();
 		const result = await runWithFloodControl(
@@ -737,7 +808,41 @@ const getMessageDetail = async (client, channelId, messageIds) => {
 		for (let i = 0; i < result.length; i++) {
 			const message = result[i];
 			if (message.media) {
-				const fileExist = checkFileExist(message, outputFolder);
+				const mediaType = getMediaType(message);
+				const mediaPath = getMediaPath(message, outputFolder);
+				let fileExist = checkFileExist(message, outputFolder);
+
+				// Validation: if file exists and check is enabled, validate it
+				if (fileExist && enableCheck && ffmpegPaths) {
+					const fileType = mediaType.toLowerCase().includes("video") ? "video" : "image";
+					if (deepValidation) {
+						logMessage.info(`Checking (deep): ${path.basename(mediaPath)}...`);
+					}
+					const validationResult = await validateFile(
+						mediaPath,
+						fileType,
+						ffmpegPaths.ffmpeg,
+						ffmpegPaths.ffprobe,
+						deepValidation // true for deep, false for fast
+					);
+
+					if (!validationResult.valid) {
+						logMessage.warn(`File failed validation: ${path.basename(mediaPath)} - ${validationResult.error}`);
+						logMessage.info(`Will re-download: ${path.basename(mediaPath)}`);
+						fileExist = false;
+						// Remove invalid file so it can be re-downloaded
+						try {
+							if (fs.existsSync(mediaPath)) {
+								fs.unlinkSync(mediaPath);
+							}
+						} catch (e) {
+							logMessage.error(`Failed to delete invalid file: ${e.message}`);
+						}
+						// Clear from cache
+						fileCheckCache.delete(mediaPath);
+					}
+				}
+
 				message._fileExist = fileExist; // Кэшируем результат
 				checkedFiles += 1;
 

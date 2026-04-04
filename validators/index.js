@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { scanExportDirectory } = require("./file_scanner");
-const { isFFmpegAvailable, getFFmpegPaths, validateFiles } = require("./ffmpeg_validator");
+const { isFFmpegAvailable, getFFmpegPaths, validateFiles, validateFile, validateVideoDeep } = require("./ffmpeg_validator");
 
 const MAX_PARALLEL = 10;
 
@@ -82,13 +82,15 @@ function deleteFile(filePath) {
  * @param {boolean} options.verbose - Show detailed output
  * @param {string} options.exportPath - Path to export directory
  * @param {string} options.type - 'all', 'image', or 'video'
+ * @param {boolean} options.deep - Use deep validation (full decode for video)
  */
 async function runValidation(options = {}) {
     const {
         dryRun = false,
         verbose = false,
         exportPath = path.join(__dirname, "..", "export"),
-        type = "all"
+        type = "all",
+        deep = false
     } = options;
 
     const startTime = Date.now();
@@ -187,7 +189,7 @@ async function runValidation(options = {}) {
         }
     };
 
-    await validateFiles(files, ffmpegPaths, progressCallback, MAX_PARALLEL);
+    await validateFiles(files, ffmpegPaths, progressCallback, MAX_PARALLEL, deep);
 
     // Clear progress line
     process.stdout.write("\r" + " ".repeat(80) + "\r");
@@ -239,7 +241,8 @@ function parseArgs() {
         dryRun: false,
         verbose: false,
         type: "all",
-        exportPath: null
+        exportPath: null,
+        deep: false
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -252,6 +255,8 @@ function parseArgs() {
             options.type = "image";
         } else if (arg === "--videos" || arg === "-V") {
             options.type = "video";
+        } else if (arg === "--deep" || arg === "-D") {
+            options.deep = true;
         } else if (!arg.startsWith("-")) {
             // Positional argument - treat as export path
             options.exportPath = path.resolve(arg);
@@ -265,6 +270,9 @@ module.exports = {
     runValidation,
     parseArgs,
     isFFmpegAvailable,
+    getFFmpegPaths,
+    validateFile,
+    validateVideoDeep,
     escapePathForCmd
 };
 

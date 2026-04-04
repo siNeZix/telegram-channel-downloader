@@ -125,7 +125,7 @@ async function validateImage(filePath, ffmpegBin) {
 }
 
 /**
- * Validate a video file using ffprobe
+ * Validate a video file using ffprobe (fast check)
  * @param {string} filePath - Path to video file
  * @param {string} ffprobeBin - Path to ffprobe binary
  * @returns {Promise<{valid: boolean, error: string|null}>}
@@ -154,14 +154,38 @@ async function validateVideo(filePath, ffprobeBin) {
 }
 
 /**
+ * Validate a video file using ffmpeg with deep decode (full check)
+ * @param {string} filePath - Path to video file
+ * @param {string} ffmpegBin - Path to ffmpeg binary
+ * @returns {Promise<{valid: boolean, error: string|null}>}
+ */
+async function validateVideoDeep(filePath, ffmpegBin) {
+    // ffmpeg -v error -i input.mp4 -f null -
+    // This decodes the entire video stream and reports any errors
+    const escapedPath = escapePathForCmd(filePath);
+    const escapedFfmpeg = escapePathForCmd(ffmpegBin);
+    const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
+
+    const result = await execPromise(cmd, VALIDATION_TIMEOUT * 3); // Allow more time for deep validation
+
+    if (result.exitCode === 0) {
+        return { valid: true, error: null };
+    }
+
+    const errorMsg = result.stderr || result.stdout || "Unknown decode error";
+    return { valid: false, error: `ffmpeg decode: ${errorMsg.substring(0, 100)}` };
+}
+
+/**
  * Validate a single file
  * @param {string} filePath - Path to file
  * @param {string} type - 'image' or 'video'
  * @param {string} ffmpegBin - Path to ffmpeg binary
  * @param {string} ffprobeBin - Path to ffprobe binary
+ * @param {boolean} deep - If true, use deep validation (full decode for video)
  * @returns {Promise<{valid: boolean, error: string|null}>}
  */
-async function validateFile(filePath, type, ffmpegBin, ffprobeBin) {
+async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false) {
     // First check if file exists
     if (!fs.existsSync(filePath)) {
         return { valid: false, error: "File does not exist" };
@@ -180,6 +204,10 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin) {
     if (type === "image") {
         return validateImage(filePath, ffmpegBin);
     } else {
+        // For video, use deep validation if requested
+        if (deep) {
+            return validateVideoDeep(filePath, ffmpegBin);
+        }
         return validateVideo(filePath, ffprobeBin);
     }
 }
@@ -190,9 +218,10 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin) {
  * @param {Object} ffmpegPaths - {ffmpeg, ffprobe}
  * @param {Function} progressCallback - Called with (file, result)
  * @param {number} maxParallel - Max parallel validations (default 10)
+ * @param {boolean} deep - Use deep validation (full decode for video)
  * @returns {Promise<{valid: number, invalid: number, errors: Array}>}
  */
-async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel = 10) {
+async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel = 10, deep = false) {
     let valid = 0;
     let invalid = 0;
     const errors = [];
@@ -213,7 +242,7 @@ async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel =
             }
 
             const file = files[currentIndex];
-            const result = await validateFile(file.path, file.type, ffmpegPaths.ffmpeg, ffmpegPaths.ffprobe);
+            const result = await validateFile(file.path, file.type, ffmpegPaths.ffmpeg, ffmpegPaths.ffprobe, deep);
 
             if (progressCallback) {
                 progressCallback(file, result);
@@ -268,5 +297,6 @@ module.exports = {
     validateFiles,
     validateImage,
     validateVideo,
+    validateVideoDeep,
     escapePathForCmd
 };
