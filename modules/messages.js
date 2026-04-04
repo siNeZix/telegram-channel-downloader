@@ -313,7 +313,17 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		const floodState = createFloodState();
 		let offsetId = 0;
 		let fastForwardMode = Number(lastKnownOffsetId) > 0;
-		let outputFolder = path.join(__dirname, "../export/", `${channelId}`);
+		
+		// Инициализация outputFolder может выбросить исключение
+		// поэтому оборачиваем в отдельный try для возможности закрыть БД в catch
+		let outputFolder;
+		try {
+			outputFolder = path.join(__dirname, "../export/", `${channelId}`);
+		} catch (folderErr) {
+			logMessage.error(`Failed to initialize output folder: ${folderErr?.message || String(folderErr)}`);
+			throw folderErr;
+		}
+		
 		let rawMessagePath = path.join(outputFolder, "raw_message.json");
 		let messageFilePath = path.join(outputFolder, "all_message.json");
 		let totalFetched = 0;
@@ -707,7 +717,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 			offsetId = messages[messages.length - 1].id;
 			updateLastSelection({ messageOffsetId: offsetId });
 			// Убран wait(3) для оптимизации - новые сообщения запрашиваются сразу
-		}
+		} // конец inner try для outputFolder
 
 		// Все сообщения обработаны, ждем завершения оставшихся загрузок
 		if (activeDownloads.size > 0) {
@@ -732,8 +742,10 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		logMessage.error(
 			`Error in getMessages(): ${err?.message || String(err)}`,
 		);
-		// Закрываем БД в случае ошибки
-		db.closeDatabase(outputFolder);
+		// Закрываем БД в случае ошибки, только если outputFolder был инициализирован
+		if (outputFolder) {
+			db.closeDatabase(outputFolder);
+		}
 	}
 };
 
