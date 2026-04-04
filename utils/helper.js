@@ -2,11 +2,6 @@ const mimeDB = require("mime-db");
 const fs = require("fs");
 const path = require("path");
 
-// Кэш существующих файлов для быстрой проверки (старый)
-// Структура: Map<folderType, Set<fileName>>
-let fileExistenceCache = new Map();
-let cachePopulated = false;
-
 // Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
 let fileCheckCache = new Map();
 
@@ -14,28 +9,6 @@ let fileCheckCache = new Map();
 let snapshotsCache = new Map();
 
 const SNAPSHOTS_DIR = "snapshots";
-
-const populateFileCache = (outputFolder, mediaTypes) => {
-	if (cachePopulated) return;
-	fileExistenceCache.clear();
-	
-	for (const mediaType of mediaTypes) {
-		const folderType = filterString(mediaType);
-		const folderPath = path.join(outputFolder, folderType);
-		if (fs.existsSync(folderPath)) {
-			const files = fs.readdirSync(folderPath);
-			fileExistenceCache.set(folderType, new Set(files));
-		} else {
-			fileExistenceCache.set(folderType, new Set());
-		}
-	}
-	cachePopulated = true;
-};
-
-const clearFileCache = () => {
-	fileExistenceCache.clear();
-	cachePopulated = false;
-};
 
 const MEDIA_TYPES = {
 	IMAGE: "image",
@@ -247,14 +220,6 @@ const getMediaPath = (message, outputFolder) => {
 		const folderType = filterString(getMediaType(message));
 		outputFolder = path.join(outputFolder, folderType);
 		const filePath = path.join(outputFolder, fileName);
-		//check if file already exists
-		// if (fs.existsSync(filePath)) {
-		// 	logMessage.info(`File already exists: ${filePath}, Changing name`);
-		// 	let ext = path.extname(filePath);
-		// 	let baseName = path.basename(filePath, ext);
-		// 	let newFileName = `${baseName}_${message.id}${ext}`;
-		// 	filePath = path.join(outputFolder, newFileName);
-		// }
 		if (!fs.existsSync(outputFolder)) {
 			fs.mkdirSync(outputFolder);
 		}
@@ -324,53 +289,6 @@ const circularStringify = (circularString, indent = 2) => {
 	return retVal;
 };
 
-const appendToJSONArrayFile = (filePath, dataToAppend) => {
-	try {
-		// JSON Lines формат: каждая пачка как отдельная строка
-		// O(1) операция - не зависит от размера файла
-		const line = circularStringify(dataToAppend) + '\n';
-		fs.appendFileSync(filePath, line);
-	} catch (e) {
-		logMessage.error(`Error appending to JSON file ${filePath}: ${e.message}`);
-		console.log(e);
-	}
-};
-
-/**
- * Читает JSON Lines файл и возвращает массив всех объектов
- * @param {string} filePath - путь к файлу
- * @returns {Array} - массив объектов
- */
-const readJSONLinesFile = (filePath) => {
-	try {
-		if (!fs.existsSync(filePath)) {
-			return [];
-		}
-		
-		const content = fs.readFileSync(filePath, 'utf8');
-		const lines = content.split('\n').filter(line => line.trim());
-		
-		const result = [];
-		for (const line of lines) {
-			try {
-				const parsed = JSON.parse(line);
-				if (Array.isArray(parsed)) {
-					result.push(...parsed);
-				} else {
-					result.push(parsed);
-				}
-			} catch (e) {
-				logMessage.warn(`Failed to parse line in ${filePath}: ${e.message}`);
-			}
-		}
-		
-		return result;
-	} catch (e) {
-		logMessage.error(`Error reading JSON Lines file ${filePath}: ${e.message}`);
-		return [];
-	}
-};
-
 module.exports = {
 	getMediaType,
 	checkFileExist,
@@ -379,11 +297,7 @@ module.exports = {
 	logMessage,
 	wait,
 	filterString,
-	appendToJSONArrayFile,
-	readJSONLinesFile,
 	circularStringify,
-	populateFileCache,
-	clearFileCache,
 	clearFileCheckCache,
 	clearSnapshotsCache,
 	addFileToCheckCache,

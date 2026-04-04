@@ -3,9 +3,6 @@ const path = require("path");
 
 // Check if running validator mode
 const args = process.argv.slice(2);
-if (args.length > 0) {
-    console.log(`[DEBUG] Received arguments: ${args.join(", ")}`);
-}
 
 // Parse --check and --deep-check flags (used during normal download to validate existing files)
 const checkIndex = args.indexOf("--check");

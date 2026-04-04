@@ -3,11 +3,8 @@ const {
 	getMediaType,
 	logMessage,
 	wait,
-	circularStringify,
 	checkFileExist,
 	getMediaPath,
-	populateFileCache,
-	clearFileCache,
 	clearFileCheckCache,
 	addFileToCheckCache,
 	buildFileName,
@@ -54,7 +51,6 @@ const logCheckProgress = (checked, total, skipped, newFiles, startedAt) => {
 };
 
 // Всегда начинаем с самого начала истории канала.
-let { messageOffsetId } = { messageOffsetId: 0 };
 const { messageOffsetId: lastKnownOffsetId = 0 } = getLastSelection();
 
 const formatEta = (totalSeconds) => {
@@ -315,7 +311,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 	}
 	try {
 		const floodState = createFloodState();
-		let offsetId = messageOffsetId;
+		let offsetId = 0;
 		let fastForwardMode = Number(lastKnownOffsetId) > 0;
 		let outputFolder = path.join(__dirname, "../export/", `${channelId}`);
 		let rawMessagePath = path.join(outputFolder, "raw_message.json");
@@ -347,10 +343,6 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 
 		// Set для отслеживания уже записанных ID (предотвращение дубликатов в сессии)
 		const knownMessageIds = new Set();
-
-		// Заполняем кэш существующих файлов для быстрой проверки
-		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
-		populateFileCache(outputFolder, mediaTypes);
 
 		// Очередь загрузок теперь живет на протяжении всего процесса
 		let activeDownloads = new Set();
@@ -732,7 +724,6 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		);
 
 		// Очищаем кэши и закрываем соединение с БД после завершения
-		clearFileCache();
 		clearFileCheckCache();
 		db.closeDatabase(outputFolder);
 
@@ -783,10 +774,6 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 	
 		// Инициализируем SQLite базу данных для этого канала
 		db.initDatabase(channelId, outputFolder);
-	
-		// Заполняем кэш существующих файлов для быстрой проверки
-		const mediaTypes = ["image", "video", "audio", "document", "webpage", "poll", "geo", "venue", "contact", "sticker", "others"];
-		populateFileCache(outputFolder, mediaTypes);
 
 		let activeDownloads = new Set();
 		let totalFilesToDownload = 0;
@@ -972,7 +959,6 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 		logMessage.info(`Skip summary: existing=${skippedExisting}`);
 		
 		// Очищаем кэши и закрываем соединение с БД после завершения
-		clearFileCache();
 		clearFileCheckCache();
 		db.closeDatabase(outputFolder);
 		
