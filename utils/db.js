@@ -1,6 +1,7 @@
 const Database = require("better-sqlite3");
 const fs = require("fs");
 const path = require("path");
+const paths = require("./paths");
 
 // Структура для хранения открытых соединений с БД для каждого канала
 const dbConnections = new Map();
@@ -12,7 +13,7 @@ const dbConnections = new Map();
  * @returns {Database.Database} Объект базы данных
  */
 const initDatabase = (channelId, outputFolder) => {
-	const dbPath = path.join(outputFolder, "messages.db");
+	const dbPath = paths.getChannelDbPath(channelId);
 	
 	// Проверяем, есть ли уже открытое соединение
 	if (dbConnections.has(dbPath)) {
@@ -71,7 +72,7 @@ const initDatabase = (channelId, outputFolder) => {
  * @returns {Database.Database|null} Объект базы данных или null
  */
 const getDatabase = (channelId, outputFolder) => {
-	const dbPath = path.join(outputFolder, "messages.db");
+	const dbPath = paths.getChannelDbPath(channelId);
 	return dbConnections.get(dbPath) || null;
 };
 
@@ -183,8 +184,8 @@ function* getMessagesForExport(channelId, outputFolder, type = "all") {
  * @param {string} outputFolder - Путь к папке экспорта
  */
 const exportToJsonFiles = (channelId, outputFolder) => {
-	const rawFilePath = path.join(outputFolder, "raw_message.json");
-	const processedFilePath = path.join(outputFolder, "all_message.json");
+	const rawFilePath = paths.getRawMessagesPath(channelId);
+	const processedFilePath = paths.getProcessedMessagesPath(channelId);
 	
 	// Очищаем существующие файлы
 	if (fs.existsSync(rawFilePath)) {
@@ -232,7 +233,9 @@ const closeAllConnections = () => {
  * @param {string} outputFolder - Путь к папке экспорта
  */
 const closeDatabase = (outputFolder) => {
-	const dbPath = path.join(outputFolder, "messages.db");
+	// Extract channelId from outputFolder path (last segment)
+	const channelId = path.basename(outputFolder);
+	const dbPath = paths.getChannelDbPath(channelId);
 	if (dbConnections.has(dbPath)) {
 		try {
 			dbConnections.get(dbPath).close();

@@ -4,6 +4,7 @@ const path = require('path');
 const { updateLastSelection } = require("../utils/file_helper");
 const { logMessage, getDialogType, circularStringify } = require("../utils/helper");
 const { numberInput, textInput, booleanInput } = require('../utils/input_helper');
+const paths = require('../utils/paths');
 
 /**
  * Fetches all dialogs from the client, sorts them by name, and exports them to JSON and HTML files.
@@ -35,9 +36,12 @@ const getAllDialogs = async (client, sortByName = true) => {
         const channelTemplateFile = path.resolve(__dirname, '../templates/channels.ejs');
         const renderedHtml = await ejs.renderFile(channelTemplateFile, { channels: dialogList });
 
-        fs.writeFileSync("./export/raw_dialog_list.json", circularStringify(dialogs, null, 2));
-        fs.writeFileSync("./export/dialog_list.html", renderedHtml);
-        fs.writeFileSync("./export/dialog_list.json", JSON.stringify(dialogList, null, 2));
+        // Ensure export directory exists
+        paths.ensureDir(paths.export);
+
+        fs.writeFileSync(path.join(paths.export, "raw_dialog_list.json"), circularStringify(dialogs, null, 2));
+        fs.writeFileSync(path.join(paths.export, "dialog_list.html"), renderedHtml);
+        fs.writeFileSync(paths.getDialogListPath(), JSON.stringify(dialogList, null, 2));
 
         return dialogList;
     } catch (error) {
@@ -131,13 +135,13 @@ const searchThroughDialogsWithSearchString = (dialogs, searchString) => {
  */
 const getDialogName = async (client, channelId) => {
     try {
-        const diaLogPath = path.resolve(process.cwd(), "./export/dialog_list.json");
-        if(!fs.existsSync(diaLogPath)) {
+        const dialogListPath = paths.getDialogListPath();
+        if(!fs.existsSync(dialogListPath)) {
             await getAllDialogs(client);
             process.exit(0);
         }
 
-        const dialogs = require(diaLogPath);
+        const dialogs = require(dialogListPath);
         const dialog = dialogs.find(d => d.id == channelId);
         return dialog ? dialog.name : null;
     } catch (error) {

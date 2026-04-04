@@ -1,15 +1,16 @@
 const fs = require('fs');
-const path = require('path');
 const { logMessage } = require('./helper');
-const configFile = "../config.json"
-const lastSelectionFile = "../export/last_selection.json"
+const paths = require('./paths');
+
+const configFile = paths.config;
+const lastSelectionFile = paths.lastSelection;
 
 const updateCredentials = (obj) => {
     try {
-        let data = fs.readFileSync(path.join(__dirname, configFile));
+        let data = fs.readFileSync(configFile);
         let credentials = JSON.parse(data);
         credentials = { ...credentials, ...obj };
-        fs.writeFileSync(path.join(__dirname, configFile), JSON.stringify(credentials, null, 2));
+        fs.writeFileSync(configFile, JSON.stringify(credentials, null, 2));
         logMessage.info('Credentials updated successfully');
     }
     catch (err) {
@@ -19,7 +20,7 @@ const updateCredentials = (obj) => {
 
 const getCredentials = () => {
     try {
-        const data = fs.readFileSync(path.join(__dirname, configFile));
+        const data = fs.readFileSync(configFile);
         const credentials = JSON.parse(data);
         return credentials;
     }
@@ -32,7 +33,7 @@ const getCredentials = () => {
 
 const getLastSelection = () => {
     try {
-        const data = fs.readFileSync(path.join(__dirname, lastSelectionFile));
+        const data = fs.readFileSync(lastSelectionFile);
         const last = JSON.parse(data);
         return last;
     }
@@ -49,7 +50,7 @@ const updateLastSelection = (object) => {
             ...object
         }
 
-        fs.writeFileSync(path.join(__dirname, lastSelectionFile), JSON.stringify(last, null, 2));
+        fs.writeFileSync(lastSelectionFile, JSON.stringify(last, null, 2));
         logMessage.debug('Last selection updated');
     }
     catch (err) {

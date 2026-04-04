@@ -3,6 +3,7 @@ const path = require("path");
 const { scanExportDirectory } = require("./file_scanner");
 const { isFFmpegAvailable, getFFmpegPaths, validateFiles, validateFile, validateVideoDeep } = require("./ffmpeg_validator");
 const { loadSnapshots } = require("../utils/helper");
+const paths = require("../utils/paths");
 
 const MAX_PARALLEL = 10;
 
@@ -89,7 +90,7 @@ async function runValidation(options = {}) {
     const {
         dryRun = false,
         verbose = false,
-        exportPath = path.join(__dirname, "..", "export"),
+        exportPath = paths.export,
         type = "all",
         deep = false,
         ignoreSnapshots = false
@@ -288,7 +289,6 @@ function parseArgs() {
         dryRun: false,
         verbose: false,
         type: "all",
-        exportPath: null,
         deep: false,
         ignoreSnapshots: false
     };
@@ -309,7 +309,7 @@ function parseArgs() {
             options.ignoreSnapshots = true;
         } else if (!arg.startsWith("-")) {
             // Positional argument - treat as export path
-            options.exportPath = path.resolve(arg);
+            options.exportPath = path.isAbsolute(arg) ? arg : path.resolve(arg);
         }
     }
 
