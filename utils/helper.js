@@ -1,6 +1,7 @@
 const mimeDB = require("mime-db");
 const fs = require("fs");
 const path = require("path");
+const db = require("./db");
 
 // Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
 let fileCheckCache = new Map();
@@ -157,8 +158,9 @@ const loadSnapshots = (channelPath) => {
 	return fixedFiles;
 };
 
-// Проверка существования файла с кэшированием и проверкой размера
-const checkFileExist = (message, outputFolder) => {
+// Проверка существования файла с кэшированием, проверкой размера, БД и снапшотов
+// channelId опционален для обратной совместимости, но настоятельно рекомендуется
+const checkFileExist = (message, outputFolder, channelId = null) => {
 	if (!message) return false;
 
 	if (!message.media) return false;
@@ -174,27 +176,41 @@ const checkFileExist = (message, outputFolder) => {
 		return cached.exists && cached.size > 0;
 	}
 
-	// Проверяем файл
+	// Проверяем файл на диске
+	let diskExists = false;
 	try {
 		if (fs.existsSync(filePath)) {
 			const stats = fs.statSync(filePath);
-			const exists = stats.size > 0;
-			fileCheckCache.set(filePath, { exists, size: stats.size });
-			return exists;
+			diskExists = stats.size > 0;
 		}
 	} catch (err) {
 		logMessage.error(`Error checking file ${filePath}: ${err.message}`);
 	}
 
-	// Проверяем в снимках
-	const snapshots = loadSnapshots(outputFolder);
-	if (snapshots.has(relativePath)) {
-		fileCheckCache.set(filePath, { exists: true, size: 1 }); // Кэшируем как существующий
-		return true;
+	// Если файла нет на диске - не скачан
+	if (!diskExists) {
+		fileCheckCache.set(filePath, { exists: false, size: 0 });
+		return false;
 	}
 
-	fileCheckCache.set(filePath, { exists: false, size: 0 });
-	return false;
+	// Файл есть на диске - проверяем дополнительные условия:
+	// 1. Отметка в БД (канал уже завершил загрузку этого файла)
+	// 2. Или файл есть в снапшотах (перенесен из другой копии)
+	let markedAsDownloaded = false;
+	const snapshots = loadSnapshots(outputFolder);
+	const inSnapshot = snapshots.has(relativePath);
+
+	// Проверяем БД, если channelId передан
+	if (channelId) {
+		markedAsDownloaded = db.isFileDownloaded(channelId, outputFolder, message.id);
+	}
+
+	// Считаем файлом если:
+	// - Есть отметка в БД ИЛИ файл в снапшоте
+	const exists = markedAsDownloaded || inSnapshot;
+
+	fileCheckCache.set(filePath, { exists, size: fs.existsSync(filePath) ? fs.statSync(filePath).size : 0 });
+	return exists;
 };
 
 // Очистка кэша проверки файлов

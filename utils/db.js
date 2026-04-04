@@ -37,9 +37,21 @@ const initDatabase = (channelId, outputFolder) => {
 			date INTEGER,
 			raw_json TEXT,
 			processed_json TEXT,
+			downloaded INTEGER DEFAULT 0,
 			PRIMARY KEY (id)
 		)
 	`);
+	
+	// Миграция: добавляем колонку downloaded, если её нет (для старых баз)
+	try {
+		const tableInfo = db.prepare("PRAGMA table_info(messages)").all();
+		const hasDownloadedColumn = tableInfo.some(col => col.name === 'downloaded');
+		if (!hasDownloadedColumn) {
+			db.exec("ALTER TABLE messages ADD COLUMN downloaded INTEGER DEFAULT 0");
+		}
+	} catch (e) {
+		// Игнорируем ошибку, если колонка уже существует
+	}
 	
 	// Создаем индекс для быстрой сортировки по дате
 	db.exec(`
@@ -73,10 +85,15 @@ const getDatabase = (channelId, outputFolder) => {
 const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) => {
 	const db = initDatabase(channelId, outputFolder);
 	
-	// Используем транзакцию для атомарной вставки
+	// Используем INSERT ... ON CONFLICT DO UPDATE, чтобы не затирать статус downloaded
 	const insertRaw = db.prepare(`
-		INSERT OR REPLACE INTO messages (id, date, raw_json, processed_json)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO messages (id, date, raw_json, processed_json, downloaded)
+		VALUES (?, ?, ?, ?, (SELECT downloaded FROM messages WHERE id = ?))
+		ON CONFLICT(id) DO UPDATE SET
+			date = excluded.date,
+			raw_json = excluded.raw_json,
+			processed_json = excluded.processed_json,
+			downloaded = COALESCE((SELECT downloaded FROM messages WHERE id = excluded.id), 0)
 	`);
 	
 	const insertMany = db.transaction((raw, processed) => {
@@ -98,7 +115,8 @@ const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) =
 				rawMsg.id,
 				dateTimestamp,
 				JSON.stringify(rawMsg),
-				processedMsg ? JSON.stringify(processedMsg) : null
+				processedMsg ? JSON.stringify(processedMsg) : null,
+				rawMsg.id // Для SELECT downloaded FROM messages WHERE id = ?
 			);
 		}
 	});
@@ -225,6 +243,73 @@ const closeDatabase = (outputFolder) => {
 	}
 };
 
+/**
+ * Устанавливает флаг downloaded для сообщения
+ * @param {string} channelId - ID канала
+ * @param {string} outputFolder - Путь к папке экспорта
+ * @param {number} messageId - ID сообщения
+ * @param {number} status - Статус загрузки (1 = скачано, 0 = не скачано)
+ */
+const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) return false;
+	
+	try {
+		db.prepare("UPDATE messages SET downloaded = ? WHERE id = ?").run(status, messageId);
+		return true;
+	} catch (e) {
+		console.error(`Error setting downloaded flag for message ${messageId}:`, e.message);
+		return false;
+	}
+};
+
+/**
+ * Проверяет, отмечен ли файл как скачанный в базе данных
+ * @param {string} channelId - ID канала
+ * @param {string} outputFolder - Путь к папке экспорта
+ * @param {number} messageId - ID сообщения
+ * @returns {boolean}
+ */
+const isFileDownloaded = (channelId, outputFolder, messageId) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) return false;
+	
+	const result = db.prepare("SELECT downloaded FROM messages WHERE id = ?").get(messageId);
+	return result ? result.downloaded === 1 : false;
+};
+
+/**
+ * Синхронизирует статус downloaded для всех сообщений с медиа на основе снапшотов
+ * Помечает файлы из снапшотов как скачанные
+ * @param {string} channelId - ID канала
+ * @param {string} outputFolder - Путь к папке экспорта
+ * @param {Set<string>} snapshotFiles - Множество относительных путей файлов из снапшотов
+ * @returns {number} Количество обновленных записей
+ */
+const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) return 0;
+	
+	let updatedCount = 0;
+	
+	const updateMany = db.transaction(() => {
+		for (const row of db.prepare("SELECT id, processed_json FROM messages WHERE downloaded = 0").iterate()) {
+			try {
+				const processed = row.processed_json ? JSON.parse(row.processed_json) : null;
+				if (processed && processed.mediaPath && snapshotFiles.has(processed.mediaPath)) {
+					db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?").run(row.id);
+					updatedCount++;
+				}
+			} catch (e) {
+				// Пропускаем сообщения с ошибками парсинга
+			}
+		}
+	});
+	
+	updateMany();
+	return updatedCount;
+};
+
 module.exports = {
 	initDatabase,
 	getDatabase,
@@ -235,4 +320,7 @@ module.exports = {
 	exportToJsonFiles,
 	closeAllConnections,
 	closeDatabase,
+	setFileDownloaded,
+	isFileDownloaded,
+	syncDownloadedFromSnapshots,
 };

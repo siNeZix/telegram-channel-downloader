@@ -10,6 +10,7 @@ const {
 	buildFileName,
 	filterString,
 	fileCheckCache,
+	loadSnapshots,
 } = require("../utils/helper");
 const {
 	getLastSelection,
@@ -227,7 +228,7 @@ const runWithFloodControl = async (state, label, fn) => {
 	);
 };
 
-const downloadMessageMedia = async (client, message, mediaPath, floodState) => {
+const downloadMessageMedia = async (client, message, mediaPath, floodState, channelId, outputFolder) => {
 	try {
 		if (message.media) {
 			if (message.media.webpage) {
@@ -277,6 +278,11 @@ const downloadMessageMedia = async (client, message, mediaPath, floodState) => {
 			// Если fileSize не обновился, получаем размер файла из файловой системы
 			if (fileSize === 0 && fs.existsSync(mediaPath)) {
 				fileSize = fs.statSync(mediaPath).size;
+			}
+
+			// Отмечаем файл как скачанный в БД
+			if (channelId && outputFolder) {
+				db.setFileDownloaded(channelId, outputFolder, message.id, 1);
 			}
 
 			return { success: true, fileSize };
@@ -349,7 +355,17 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		deduplicateChannelFiles(outputFolder);
 
 		// Инициализируем SQLite базу данных для этого канала
-		db.initDatabase(channelId, outputFolder);
+			db.initDatabase(channelId, outputFolder);
+	
+			// Синхронизируем статус downloaded из снапшотов для уже существующих файлов
+			// Это предотвращает повторную загрузку файлов, перенесенных из других копий
+			const snapshotFiles = loadSnapshots(outputFolder);
+			if (snapshotFiles.size > 0) {
+				const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
+				if (syncedCount > 0) {
+					logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
+				}
+			}
 
 		// Set для отслеживания уже записанных ID (предотвращение дубликатов в сессии)
 		const knownMessageIds = new Set();
@@ -464,7 +480,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 						downloadableFiles["all"];
 					if (shouldDownload) {
 						// Проверяем существование файла и кэшируем результат
-						let fileExist = checkFileExist(message, outputFolder);
+						let fileExist = checkFileExist(message, outputFolder, channelId);
 	
 						// Validation: if file exists and check is enabled, validate it
 						if (fileExist && enableCheck && ffmpegPaths) {
@@ -588,7 +604,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 					// Используем кэшированный результат проверки вместо повторного вызова
 					const fileExist = message._fileExist !== undefined
 						? message._fileExist
-						: checkFileExist(message, outputFolder);
+						: checkFileExist(message, outputFolder, channelId);
 
 					const mediaExtension = path
 						.extname(mediaPath)
@@ -630,6 +646,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 							message,
 							mediaPath,
 							floodState,
+							channelId,
+							outputFolder,
 						)
 							.then((result) => {
 								if (result.success) {
@@ -809,7 +827,7 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 			if (message.media) {
 				const mediaType = getMediaType(message);
 				const mediaPath = getMediaPath(message, outputFolder);
-				let fileExist = checkFileExist(message, outputFolder);
+				let fileExist = checkFileExist(message, outputFolder, channelId);
 
 				// Validation: if file exists and check is enabled, validate it
 				if (fileExist && enableCheck && ffmpegPaths) {
@@ -884,21 +902,23 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 			let message = result[i];
 			if (message.media) {
 				// Используем кэшированный результат проверки
-				const fileExist = message._fileExist !== undefined
-					? message._fileExist
-					: checkFileExist(message, outputFolder);
-				if (fileExist) {
-					continue; // Пропускаем существующие файлы
-				}
-				queuedDownloads += 1;
-				const mediaPath = getMediaPath(message, outputFolder);
-				let downloadPromise;
-				downloadPromise = downloadMessageMedia(
-					client,
-					message,
-					mediaPath,
-					floodState,
-				)
+					const fileExist = message._fileExist !== undefined
+						? message._fileExist
+						: checkFileExist(message, outputFolder, channelId);
+					if (fileExist) {
+						continue; // Пропускаем существующие файлы
+					}
+					queuedDownloads += 1;
+					const mediaPath = getMediaPath(message, outputFolder);
+					let downloadPromise;
+					downloadPromise = downloadMessageMedia(
+						client,
+						message,
+						mediaPath,
+						floodState,
+						channelId,
+						outputFolder,
+					)
 					.then((result) => {
 						if (result.success) {
 							successfulDownloads += 1;
