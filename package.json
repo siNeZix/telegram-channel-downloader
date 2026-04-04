@@ -1,7 +1,7 @@
 {
   "name": "telegram-channel-downloader",
   "version": "1.0.0",
-  "description": "scrap and download all media and message from telegram channel, group or a user",
+  "description": "Scrape and download all media and messages from Telegram channels, groups, or users.",
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
@@ -19,19 +19,19 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abhishekjnvk/telegram-channel-downloader.git"
+    "url": "git+https://github.com/siNeZix/telegram-channel-downloader.git"
   },
   "keywords": [
     "telegram",
     "node.js",
-    "scrapper"
+    "scraper"
   ],
-  "author": "abhishekjnvk",
+  "author": "siNeZix",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/abhishekjnvk/telegram-channel-downloader/issues"
+    "url": "https://github.com/siNeZix/telegram-channel-downloader/issues"
   },
-  "homepage": "https://github.com/abhishekjnvk/telegram-channel-downloader#readme",
+  "homepage": "https://github.com/siNeZix/telegram-channel-downloader#readme",
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "ejs": "^3.1.10",

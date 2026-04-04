@@ -24,7 +24,7 @@ const getCredentials = () => {
         return credentials;
     }
     catch (err) {
-        logMessage.error("Please add your credentials in config.json file, follow https://github.com/abhishekjnvk/telegram-channel-downloader#setup for more info");
+        logMessage.error("Please add your credentials in config.json file, follow https://github.com/siNeZix/telegram-channel-downloader#setup for more info");
         process.exit(1);
     }
 }

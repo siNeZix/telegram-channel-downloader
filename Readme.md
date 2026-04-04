@@ -1,20 +1,19 @@
 # Telegram Channel Downloader
 
-Telegram Channel Downloader is a Node.js application that allows users to download media files and messages in html and json format from Telegram channels, groups, or users. This tool simplifies the process of archiving content from Telegram for offline viewing or storage.
+Telegram Channel Downloader is a Node.js application that allows you to scrape and download all media files and messages (in HTML and JSON format) from Telegram channels, groups, or users. This tool simplifies the process of archiving content from Telegram for offline viewing or storage.
 
-## Sponsor Project
-<p>Support the project by buying me a coffee! Every contribution helps to keep the project running.</p>
-<a href="https://www.buymeacoffee.com/abhishekjnvk" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" style="height: 41px !important;width: 174px !important;box-shadow: 0px 3px 2px 0px rgba(190, 190, 190, 0.5) !important;-webkit-box-shadow: 0px 3px 2px 0px rgba(190, 190, 190, 0.5) !important;" ></a>
+## Prerequisites
+
+Before you begin, ensure you have the following installed on your system:
+*   **Node.js** (v12 or higher recommended)
+*   **npm** or **yarn**
 
 ## Setup
 
-To use the Telegram Channel Downloader, follow these steps:
-
-1. **Create a Telegram App**: Go to [https://my.telegram.org/apps](https://my.telegram.org/apps) and create a new application.
-2. **Get API Credentials**: After creating the app, copy the API ID and API Hash provided by Telegram.
-
-### Configure `config.json`:
-5.  In the root directory of the application, create a file named `config.json` and paste the following code:
+1.  **Create a Telegram App**: Go to [https://my.telegram.org/apps](https://my.telegram.org/apps) and create a new application.
+2.  **Get API Credentials**: After creating the app, copy the API ID and API Hash provided by Telegram.
+3.  **Configure `config.json`**:
+    In the root directory of the application, create a file named `config.json` and paste the following code:
     ```json
     {
         "apiId": YOUR_API_ID,
@@ -24,49 +23,48 @@ To use the Telegram Channel Downloader, follow these steps:
     ```
     Replace `YOUR_API_ID` and `YOUR_API_HASH` with the values obtained in step 2. Keep the `sessionId` blank for now; it will be updated automatically after logging in for the first time.
 
-
 ## Usage
-Once the setup is complete, you can start using the Telegram Channel Downloader:
 
-1. **Run the Script**: Open your terminal or command prompt and navigate to the directory where the Telegram Channel Downloader is located. Run the following command to start the script:
+1.  **Install Dependencies**:
+    ```bash
+    npm install
+    ```
+2.  **Run the Script**:
     ```bash
     npm start
     ```
-2. **Login**: The script will prompt you to enter your phone number and the code sent to your phone or Telegram account. This authentication is required for the first time you run the script.
-3. **Enter Channel/Group/User Name**: After logging in, enter the name of the channel, group, or user from which you want to download media files and messages.
-4. **Wait for Download**: The script will start downloading all available media files and messages from the specified channel, group, or user. Depending on the size of the content, this process may take some time.
-5. **Access Downloaded Files**: Once the download is complete, you can find the downloaded media files and messages in the `export/` directory within the Telegram Channel Downloader directory.
+3.  **Login**: The script will prompt you to enter your phone number and the verification code sent to your Telegram account. This authentication is required for the first time you run the script.
+4.  **Select Dialog**: The script will display a list of your recent dialogs. You can search and select the channel, group, or user you want to archive.
+5.  **Wait for Download**: The script will start downloading all available media files and messages from the specified source. Depending on the size of the content, this process may take some time.
+6.  **Access Downloaded Files**: Once the download is complete, you can find the downloaded media files in the `export/` directory.
 
-## Additional Notes
+## Export Formats
 
-- **Session Handling**: The `sessionId` field in the `config.json` file will be automatically updated after logging in for the first time. This session ID is used for subsequent logins to avoid re-entering your credentials.
-- **Media Types**: The Telegram Channel Downloader supports downloading various types of media files, including images, videos, audio files, documents, and other attachments shared within the specified channel, group, or user.
+The application supports exporting messages in two formats:
 
-## Формат файлов экспорта
+### JSON Lines Format (Recommended)
 
-### raw_message.json и all_message.json
+The exported files use the **JSON Lines** format for optimized performance.
 
-Файлы используют **JSON Lines** формат для оптимизации производительности.
+**Format:**
+*   Each batch of messages is written as a separate line
+*   Each line is a valid JSON array of message objects
+*   Lines are separated by the newline character `\n`
 
-**Формат:**
-- Каждая пачка сообщений записывается как отдельная строка
-- Каждая строка — валидный JSON массив объектов
-- Строки разделены символом новой строки `\n`
-
-**Пример:**
+**Example:**
 ```json
 [{"id":1,"message":"text1","date":"2024-01-01"}]
 [{"id":2,"message":"text2","date":"2024-01-02"}]
 ```
 
-**Преимущества:**
-- Запись за < 1 секунды (вместо 2-4 минут)
-- Минимальное использование памяти
-- Не зависит от размера файла
+**Advantages:**
+*   Write speed < 1 second (instead of 2-4 minutes)
+*   Minimal memory usage
+*   Independent of file size
 
-### Чтение файлов
+**Reading Files:**
 
-Для чтения JSON Lines файлов используйте функцию `readJSONLinesFile()`:
+To read JSON Lines files, use the `readJSONLinesFile()` utility function:
 
 ```javascript
 const { readJSONLinesFile } = require('./utils/helper');
@@ -75,15 +73,30 @@ const messages = readJSONLinesFile('path/to/raw_message.json');
 console.log(`Total messages: ${messages.length}`);
 ```
 
-### Миграция старых файлов
+### HTML Format
 
-Для конвертации существующих JSON Array файлов в JSON Lines:
+The application also generates an HTML file (`messages.html`) for easy viewing of the exported content in a web browser.
 
-```bash
-npm run migrate
-```
+## Session Handling
+
+The `sessionId` field in the `config.json` file will be automatically updated after logging in for the first time. This session ID is used for subsequent logins to avoid re-entering your credentials.
+
+## Media Types
+
+The Telegram Channel Downloader supports downloading various types of media files, including images, videos, audio files, documents, and other attachments.
+
+## Available Scripts
+
+*   `npm start` - Start the main downloader script.
+*   `npm run dev` - Start the script with Nodemon for auto-reloading on changes.
+*   `npm run save-files` - Re-run the file saving process (useful if previous saves were interrupted).
+*   `npm run export-messages` - Re-run the message export process.
+*   `npm run valid` - Run validators (e.g., FFmpeg validation).
 
 ## Contributing
-Contributions are welcome! If you have any suggestions, bug reports, or feature requests, please open an issue or submit a pull request.
 
+Contributions are welcome! If you have any suggestions, bug reports, or feature requests, please open an issue or submit a pull request on GitHub.
 
+## License
+
+This project is licensed under the ISC License.
