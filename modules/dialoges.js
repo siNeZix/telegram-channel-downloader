@@ -1,9 +1,9 @@
 const ejs = require('ejs');
 const fs = require("fs");
 const path = require('path');
-const { updateLastSelection } = require("../utils/file-helper");
+const { updateLastSelection } = require("../utils/file_helper");
 const { logMessage, getDialogType, circularStringify } = require("../utils/helper");
-const { numberInput, textInput, booleanInput } = require('../utils/input-helper');
+const { numberInput, textInput, booleanInput } = require('../utils/input_helper');
 
 /**
  * Fetches all dialogs from the client, sorts them by name, and exports them to JSON and HTML files.

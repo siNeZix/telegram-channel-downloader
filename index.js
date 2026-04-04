@@ -32,7 +32,7 @@ if (args[0] === "valid") {
     return;
 }
 
-const { getMessages } = require("./modules/messages");
+const { getMessages, startChannelListener, downloadMessagesByIds } = require("./modules/messages");
 const { getLastSelection } = require("./utils/file_helper");
 const { initAuth } = require("./modules/auth");
 const { searchDialog, selectDialog, getDialogName, getAllDialogs} = require("./modules/dialoges");
@@ -40,6 +40,8 @@ const { logMessage, MEDIA_TYPES } = require("./utils/helper");
 const {
   booleanInput,
   downloadOptionInput,
+  textInput,
+  selectInput,
 } = require("./utils/input_helper");
 
 const channelId = "";
@@ -56,27 +58,121 @@ const downloadableFiles = {
   pdf: true,
 };
 
-(async () => {
-  try {
-    await channelDownloader.handle({ channelId, downloadableFiles });
-  } catch (err) {
-    console.error(err);
-  }
-  client = await initAuth();
-  const dialogs = await getAllDialogs(client);
+// --- Main Menu ---
+const showMainMenu = async () => {
+  const choices = [
+    { name: "Full Download (All messages with media)", value: "download" },
+    { name: "Real-time Monitor (Listen for new messages)", value: "listen" },
+    { name: "Download by IDs (Specific message IDs)", value: "download_ids" },
+    { name: "Run File Validators", value: "valid" },
+    { name: "Exit", value: "exit" },
+  ];
 
-  if (!channelId) {
-    await searchOrListChannel(dialogs);
+  return await selectInput("Select an action:", choices);
+};
+
+// --- Search or List Channel ---
+const searchOrListChannel = async (dialogs) => {
+  const wantToSearch = await booleanInput("Do you want to search for a channel?", false);
+  if (wantToSearch) {
+    await searchDialog(dialogs);
   } else {
-    logMessage.success(`Selected channel is: ${getDialogName(channelId)}`);
+    await selectDialog(dialogs);
+  }
+};
+
+// --- Download Full Channel ---
+const runFullDownload = async (client, chId) => {
+  let selectedChannelId = chId;
+
+  if (!selectedChannelId) {
+    const dialogs = await getAllDialogs(client);
+    await searchOrListChannel(dialogs);
+    // Get channelId from file_helper after selection
+    const lastSelection = getLastSelection();
+    selectedChannelId = lastSelection.channelId;
+  } else {
+    logMessage.success(`Selected channel is: ${getDialogName(selectedChannelId)}`);
     const changeChannel = await booleanInput("Do you want to change channel?", false);
     if (changeChannel) {
+      const dialogs = await getAllDialogs(client);
       await searchOrListChannel(dialogs);
+      const lastSelection = getLastSelection();
+      selectedChannelId = lastSelection.channelId;
     }
   }
-  const downloadableFiles = await downloadOptionInput();
-  await getMessages(client, channelId, downloadableFiles, { check: checkMode !== "none", deep: checkMode === "deep" });
-  await client.disconnect();
 
-  process.exit(0);
+  const filesToDownload = await downloadOptionInput();
+  await getMessages(client, selectedChannelId, filesToDownload, { check: checkMode !== "none", deep: checkMode === "deep" });
+};
+
+// --- Download by IDs ---
+const runDownloadByIds = async (client) => {
+  const chIdInput = await textInput("Please Enter Channel ID: ");
+  const channelIdNum = Number(chIdInput);
+  if (!channelIdNum) {
+    logMessage.error("Invalid Channel ID");
+    return;
+  }
+
+  const messageIdsText = await textInput("Please Enter Message Id(s) (separated by comma): ");
+  const messageIds = messageIdsText.split(",").map(Number).filter(id => !isNaN(id));
+
+  if (messageIds.length === 0) {
+    logMessage.error("No valid message IDs provided");
+    return;
+  }
+
+  await downloadMessagesByIds(client, channelIdNum, messageIds);
+};
+
+// Main Entry Point
+(async () => {
+  try {
+    client = await initAuth();
+
+    // Show main menu and get choice
+    const choice = await showMainMenu();
+
+    switch (choice) {
+      case "download":
+        await runFullDownload(client, null);
+        break;
+
+      case "listen":
+        await startChannelListener(client, null);
+        // Keep the process running for listening mode
+        logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
+        await new Promise(() => {}); // Infinite wait
+        break;
+
+      case "download_ids":
+        await runDownloadByIds(client);
+        break;
+
+      case "valid":
+        const { runValidation, parseArgs } = require("./validators");
+        const options = parseArgs();
+        if (checkMode === "deep") {
+          options.deep = true;
+        }
+        await runValidation(options);
+        break;
+
+      case "exit":
+        logMessage.info("Exiting...");
+        break;
+
+      default:
+        logMessage.error("Unknown option selected");
+    }
+
+    if (client) {
+      await client.disconnect();
+    }
+    process.exit(0);
+  } catch (err) {
+    console.error(err);
+    process.exit(1);
+  }
 })();

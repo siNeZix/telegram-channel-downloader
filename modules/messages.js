@@ -16,12 +16,8 @@ const {
 	getLastSelection,
 	updateLastSelection,
 } = require("../utils/file_helper");
-const {
-	deduplicateChannelFiles,
-} = require("../utils/migration");
 const db = require("../utils/db");
 const path = require("path");
-const logger = require("../utils/logger");
 const { circularStringify } = require("../utils/helper");
 
 // Import validators for deep file checking
@@ -353,8 +349,8 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 			fs.mkdirSync(outputFolder, { recursive: true });
 		}
 
-		// Единоразовая очистка дубликатов при старте
-		deduplicateChannelFiles(outputFolder);
+		// Единоразовая очистка дубликатов при старте (отключено, требует миграции)
+		// deduplicateChannelFiles(outputFolder);
 
 		// Инициализируем SQLite базу данных для этого канала
 			db.initDatabase(channelId, outputFolder);
@@ -1018,8 +1014,106 @@ const sendMessage = async (client, channelId, message) => {
 	}
 };
 
+// --- Listen Channel (Real-time monitoring) ---
+// Обработчик новых сообщений для прослушивания канала
+const handleNewMessage = async (event, client, channelId) => {
+	const messageChatId =
+		event.message?.peerId?.chatId ||
+		event.message?.peerId?.channelId ||
+		event.message?.peerId?.userId;
+	if (Number(messageChatId) !== Number(channelId)) {
+		return;
+	}
+
+	const messageId = event.message?.id;
+	const isMedia = !!event.message?.media;
+	if (isMedia) {
+		const outputFolder = path.join(
+			process.cwd(),
+			"export",
+			channelId.toString()
+		);
+
+		const details = await getMessageDetail(client, channelId, [messageId]);
+		for (const msg of details) {
+			await downloadMessageMedia(
+				client,
+				msg,
+				getMediaPath(msg, outputFolder),
+				createFloodState(),
+				channelId,
+				outputFolder
+			);
+			logMessage.success(`Downloaded media from new message: ${msg.id}`);
+		}
+	}
+};
+
+// Запуск прослушивания канала в реальном времени
+const startChannelListener = async (client, channelId) => {
+	const { NewMessage } = require("telegram/events");
+	const { getDialogName } = require("./dialoges");
+	const { selectInput } = require("../utils/input_helper");
+
+	// Если channelId не передан, предлагаем выбрать
+	if (!channelId) {
+		const { getAllDialogs } = require("./dialoges");
+		logMessage.info("Please select a channel to monitor");
+		const allChannels = await getAllDialogs(client);
+		const options = allChannels.map((d) => ({
+			name: d.name,
+			value: d.id,
+		}));
+
+		channelId = await selectInput("Select channel", options);
+	}
+
+	const dialogName = await getDialogName(client, channelId);
+	logMessage.success(`Started listening to: ${dialogName}`);
+	
+	client.addEventHandler(
+		(event) => handleNewMessage(event, client, channelId),
+		new NewMessage({})
+	);
+};
+
+// --- Download messages by IDs ---
+const downloadMessagesByIds = async (client, channelId, messageIds) => {
+	try {
+		const outputFolder = path.join(
+			process.cwd(),
+			"export",
+			channelId.toString()
+		);
+
+		const messageArr = await getMessageDetail(client, channelId, messageIds);
+		for (const message of messageArr) {
+			// Проверяем, есть ли медиа в сообщении
+			if (message.media) {
+				const mediaPath = getMediaPath(message, outputFolder);
+				await downloadMessageMedia(
+					client,
+					message,
+					mediaPath,
+					createFloodState(),
+					channelId,
+					outputFolder
+				);
+				logMessage.success(`Downloaded media from message: ${message.id}`);
+			} else {
+				logMessage.info(`No media in message: ${message.id}`);
+			}
+		}
+		logMessage.success("Done with downloading messages");
+	} catch (error) {
+		logMessage.error(`Error downloading messages by IDs: ${error.message}`);
+	}
+};
+
 module.exports = {
 	getMessages,
 	getMessageDetail,
 	sendMessage,
+	startChannelListener,
+	downloadMessagesByIds,
 };

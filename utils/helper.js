@@ -257,11 +257,11 @@ const getDialogType = (dialog) => {
 	return "Unknown";
 };
 
-// Logging utility
+// Logging utility with enhanced formatting
 const logMessage = {
 	info: (message) => {
 		if (!shouldLog("info")) return;
-		let logMessage = `📢: ${consoleColors.magenta} ${message} ${consoleColors.reset}`;
+		let logMessage = `ℹ️  ${consoleColors.blue} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
 	},
 	error: (message) => {
@@ -271,18 +271,22 @@ const logMessage = {
 	},
 	success: (message) => {
 		if (!shouldLog("success")) return;
-		let logMessage = `✅ ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
+		let logMessage = `✅ ${consoleColors.green} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
 	},
 	debug: (message) => {
 		if (!shouldLog("debug")) return;
-		let logMessage = `⚠️ ${message}`;
+		let logMessage = `🔍 ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
 	},
 	warn: (message) => {
 		if (!shouldLog("warn")) return;
 		let logMessage = `⚠️ ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
 		console.log(logMessage);
+	},
+	table: (data) => {
+		if (!shouldLog("info")) return;
+		console.table(data);
 	},
 };
 
