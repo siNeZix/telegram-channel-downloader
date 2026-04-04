@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { scanExportDirectory } = require("./file_scanner");
 const { isFFmpegAvailable, getFFmpegPaths, validateFiles, validateFile, validateVideoDeep } = require("./ffmpeg_validator");
+const { loadSnapshots } = require("../utils/helper");
 
 const MAX_PARALLEL = 10;
 
@@ -90,7 +91,8 @@ async function runValidation(options = {}) {
         verbose = false,
         exportPath = path.join(__dirname, "..", "export"),
         type = "all",
-        deep = false
+        deep = false,
+        ignoreSnapshots = false
     } = options;
 
     const startTime = Date.now();
@@ -98,6 +100,7 @@ async function runValidation(options = {}) {
     let totalValid = 0;
     let totalInvalid = 0;
     let totalDeleted = 0;
+    let totalSkipped = 0;
     let totalErrors = 0;
     let deletedEntries = [];
     let errorEntries = [];
@@ -105,6 +108,23 @@ async function runValidation(options = {}) {
     log.info(`Starting file validation...`);
     if (dryRun) {
         log.warn(`DRY-RUN MODE: No files will be deleted`);
+    }
+
+    // Load snapshots for all channels if not ignored
+    const snapshotsByChannel = new Map();
+    if (!ignoreSnapshots) {
+        log.info(`Loading snapshots to skip pre-validated files...`);
+        const entries = fs.readdirSync(exportPath, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.isDirectory() && entry.name !== "snapshots") {
+                const channelPath = path.join(exportPath, entry.name);
+                const snapshots = loadSnapshots(channelPath);
+                if (snapshots.size > 0) {
+                    snapshotsByChannel.set(channelPath, snapshots);
+                    log.info(`Loaded ${snapshots.size} snapshot entries for '${entry.name}'`);
+                }
+            }
+        }
     }
 
     // Check ffmpeg availability
@@ -151,6 +171,29 @@ async function runValidation(options = {}) {
 
     const progressCallback = (file, result) => {
         const now = Date.now();
+
+        // Check if this file is in any snapshot (skip validation if so)
+        if (snapshotsByChannel.size > 0) {
+            // Find which channel this file belongs to
+            for (const [channelPath, snapshots] of snapshotsByChannel) {
+                // Check if file path starts with channel path
+                if (file.path.startsWith(channelPath)) {
+                    // Extract path relative to channel folder (remove "channel_name/" prefix)
+                    const channelName = path.basename(channelPath);
+                    const relativeToChannel = file.relativePath.substring(channelName.length + 1);
+                    
+                    if (snapshots.has(relativeToChannel)) {
+                        // File is in snapshot - skip validation
+                        totalSkipped++;
+                        if (verbose) {
+                            log.info(`Skipped (snapshot): ${file.relativePath}`);
+                        }
+                        return; // Don't count as valid or invalid, just skip
+                    }
+                    break;
+                }
+            }
+        }
 
         if (verbose || now - lastProgressUpdate >= PROGRESS_UPDATE_INTERVAL) {
             printProgress(totalValid + totalInvalid + totalErrors, files.length);
@@ -199,6 +242,9 @@ async function runValidation(options = {}) {
     log.info(`=== Validation Complete ===`);
     console.log("=".repeat(50));
     log.info(`Scanned:  ${totalScanned} files`);
+    if (totalSkipped > 0) {
+        log.warn(`Skipped:  ${totalSkipped} files (from snapshots)`);
+    }
     log.success(`Valid:   ${totalValid} files`);
     log.error(`Invalid: ${totalInvalid} files`);
     if (dryRun) {
@@ -215,6 +261,7 @@ async function runValidation(options = {}) {
         totalValid,
         totalInvalid,
         totalDeleted,
+        totalSkipped,
         errors: totalErrors
     };
 }
@@ -242,7 +289,8 @@ function parseArgs() {
         verbose: false,
         type: "all",
         exportPath: null,
-        deep: false
+        deep: false,
+        ignoreSnapshots: false
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -257,6 +305,8 @@ function parseArgs() {
             options.type = "video";
         } else if (arg === "--deep" || arg === "-D") {
             options.deep = true;
+        } else if (arg === "--ignore-snapshots" || arg === "-S") {
+            options.ignoreSnapshots = true;
         } else if (!arg.startsWith("-")) {
             // Positional argument - treat as export path
             options.exportPath = path.resolve(arg);

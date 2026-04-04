@@ -258,6 +258,11 @@ const logMessage = {
 		let logMessage = `⚠️ ${message}`;
 		console.log(logMessage);
 	},
+	warn: (message) => {
+		if (!shouldLog("warn")) return;
+		let logMessage = `⚠️ ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
+		console.log(logMessage);
+	},
 };
 
 const wait = (second) => {
