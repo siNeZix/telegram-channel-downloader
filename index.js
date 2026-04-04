@@ -42,12 +42,25 @@ const {
   downloadOptionInput,
 } = require("./utils/input_helper");
 
-let { channelId } = getLastSelection();
-var client = null;
+const channelId = "";
+const downloadableFiles = {
+  webpage: true,
+  poll: true,
+  geo: true,
+  contact: true,
+  venue: true,
+  sticker: true,
+  image: true,
+  video: true,
+  audio: true,
+  pdf: true,
+};
 
 (async () => {
-  if (!fs.existsSync("./export")) {
-    fs.mkdirSync("./export");
+  try {
+    await channelDownloader.handle({ channelId, downloadableFiles });
+  } catch (err) {
+    console.error(err);
   }
   client = await initAuth();
   const dialogs = await getAllDialogs(client);
@@ -67,12 +80,3 @@ var client = null;
 
   process.exit(0);
 })();
-
-async function searchOrListChannel(dialogs) {
-  const searchOrListChannel = await booleanInput("Do you want to search for a channel? If not, all channels will be listed.");
-  if (searchOrListChannel) {
-    channelId = await searchDialog(dialogs)
-  } else {
-    channelId = await selectDialog(dialogs);
-  }
-}

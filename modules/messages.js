@@ -21,6 +21,8 @@ const {
 } = require("../utils/migration");
 const db = require("../utils/db");
 const path = require("path");
+const logger = require("../utils/logger");
+const { circularStringify } = require("../utils/helper");
 
 // Import validators for deep file checking
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");

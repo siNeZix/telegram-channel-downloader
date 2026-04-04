@@ -16,12 +16,11 @@ Before you begin, ensure you have the following installed on your system:
     In the root directory of the application, create a file named `config.json` and paste the following code:
     ```json
     {
-        "apiId": YOUR_API_ID,
+        "apiId": "YOUR_API_ID",
         "apiHash": "YOUR_API_HASH",
         "sessionId": ""
     }
     ```
-    Replace `YOUR_API_ID` and `YOUR_API_HASH` with the values obtained in step 2. Keep the `sessionId` blank for now; it will be updated automatically after logging in for the first time.
 
 ## Usage
 

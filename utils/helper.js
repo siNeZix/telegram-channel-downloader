@@ -11,6 +11,7 @@ let snapshotsCache = new Map();
 
 const SNAPSHOTS_DIR = "snapshots";
 
+// Define media types
 const MEDIA_TYPES = {
 	IMAGE: "image",
 	VIDEO: "video",
@@ -46,6 +47,7 @@ const CURRENT_LOG_LEVEL = process.env.LOG_LEVEL || "info";
 const shouldLog = (level) =>
 	LOG_LEVELS[level] >= (LOG_LEVELS[CURRENT_LOG_LEVEL] || LOG_LEVELS.info);
 
+// Get the media type of a message
 const getMediaType = (message) => {
 	if (message.media) {
 		if (message.media.photo) return MEDIA_TYPES.IMAGE;
@@ -228,6 +230,7 @@ const addFileToCheckCache = (filePath, size) => {
 	fileCheckCache.set(filePath, { exists: true, size });
 };
 
+// Get the path to save the media file
 const getMediaPath = (message, outputFolder) => {
 	if (!message) return;
 
@@ -246,6 +249,7 @@ const getMediaPath = (message, outputFolder) => {
 	}
 };
 
+// Get the type of dialog
 const getDialogType = (dialog) => {
 	if (dialog.isChannel) return "Channel";
 	if (dialog.isGroup) return "Group";
@@ -253,6 +257,7 @@ const getDialogType = (dialog) => {
 	return "Unknown";
 };
 
+// Logging utility
 const logMessage = {
 	info: (message) => {
 		if (!shouldLog("info")) return;
@@ -290,6 +295,7 @@ const wait = (second) => {
 	});
 };
 
+// Filter a string to remove non-alphanumeric characters
 const filterString = (string) => {
 	return string.replace(/[^a-zA-Z0-9]/g, "");
 };

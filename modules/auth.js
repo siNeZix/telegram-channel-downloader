@@ -1,11 +1,10 @@
-const inquirer = require("inquirer");
-
 const { TelegramClient } = require("telegram");
 const { Logger } = require("telegram/extensions");
 const { updateCredentials, getCredentials } = require("../utils/file_helper");
 
 const { StringSession } = require("telegram/sessions");
 const { logMessage } = require("../utils/helper");
+
 const {
 	textInput,
 	mobileNumberInput,
@@ -13,8 +12,6 @@ const {
 	selectInput,
 } = require("../utils/input_helper");
 
-let { apiHash, apiId, sessionId } = getCredentials();
-const stringSession = new StringSession(sessionId || "");
 const OTP_METHOD = {
 	SMS: "sms",
 	APP: "app",
