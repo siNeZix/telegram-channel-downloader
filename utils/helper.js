@@ -2,6 +2,7 @@ const mimeDB = require("mime-db");
 const fs = require("fs");
 const path = require("path");
 const db = require("./db");
+const logger = require("./logger");
 
 // Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
 let fileCheckCache = new Map();
@@ -261,28 +262,33 @@ const getDialogType = (dialog) => {
 const logMessage = {
 	info: (message) => {
 		if (!shouldLog("info")) return;
-		let logMessage = `ℹ️  ${consoleColors.blue} ${message} ${consoleColors.reset}`;
-		console.log(logMessage);
+		let logMsg = `ℹ️  ${consoleColors.blue} ${message} ${consoleColors.reset}`;
+		console.log(logMsg);
+		logger.write("info", logMsg);
 	},
 	error: (message) => {
 		if (!shouldLog("error")) return;
-		let logMessage = `❌ ${consoleColors.red} ${message} ${consoleColors.reset}`;
-		console.log(logMessage);
+		let logMsg = `❌ ${consoleColors.red} ${message} ${consoleColors.reset}`;
+		console.log(logMsg);
+		logger.write("error", logMsg);
 	},
 	success: (message) => {
 		if (!shouldLog("success")) return;
-		let logMessage = `✅ ${consoleColors.green} ${message} ${consoleColors.reset}`;
-		console.log(logMessage);
+		let logMsg = `✅ ${consoleColors.green} ${message} ${consoleColors.reset}`;
+		console.log(logMsg);
+		logger.write("success", logMsg);
 	},
 	debug: (message) => {
 		if (!shouldLog("debug")) return;
-		let logMessage = `🔍 ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
-		console.log(logMessage);
+		let logMsg = `🔍 ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
+		console.log(logMsg);
+		logger.write("debug", logMsg);
 	},
 	warn: (message) => {
 		if (!shouldLog("warn")) return;
-		let logMessage = `⚠️ ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
-		console.log(logMessage);
+		let logMsg = `⚠️ ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
+		console.log(logMsg);
+		logger.write("warn", logMsg);
 	},
 	table: (data) => {
 		if (!shouldLog("info")) return;

@@ -12,6 +12,7 @@ class PathsManager {
         this.config = path.join(this.root, 'config.json');
         this.lastSelection = path.join(this.export, 'last_selection.json');
         this.snapshots = 'snapshots';
+        this.logs = path.join(this.root, 'logs');
     }
 
     /**
