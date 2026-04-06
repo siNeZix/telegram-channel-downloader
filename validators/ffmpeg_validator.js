@@ -7,6 +7,20 @@ const VALIDATION_TIMEOUT = 30000; // 30 seconds
 let ffmpegPath = null;
 let ffprobePath = null;
 
+/** 
+ * Simple logger that avoids circular dependency with helper.js 
+ * Only uses console.log for critical errors
+ */
+const log = {
+    debug: (msg) => {
+        // Check if debug flag is set
+        if (process.argv.includes("--debug")) {
+            console.log(`[VALID] ${msg}`);
+        }
+    },
+    error: (msg) => console.error(`[VALID ERROR] ${msg}`)
+};
+
 /**
  * Escape path for Windows command line
  * @param {string} filePath
@@ -25,35 +39,45 @@ function escapePathForCmd(filePath) {
  */
 async function findFFmpeg() {
     if (ffmpegPath && ffprobePath) {
+        log.debug(`findFFmpeg: using cached paths ffmpeg=${ffmpegPath}, ffprobe=${ffprobePath}`);
         return { ffmpeg: ffmpegPath, ffprobe: ffprobePath };
     }
 
     return new Promise((resolve) => {
         // Try to find ffmpeg
         const cmd = process.platform === "win32" ? "where ffmpeg" : "which ffmpeg";
+        log.debug(`findFFmpeg: searching with command: ${cmd}`);
 
         exec(cmd, (error, stdout) => {
             if (error || !stdout.trim()) {
+                log.debug(`findFFmpeg: ffmpeg not found, error=${error?.message || 'no stdout'}`);
                 resolve(null);
                 return;
             }
 
             const ffmpegBin = stdout.trim().split("\n")[0];
+            log.debug(`findFFmpeg: found ffmpeg at ${ffmpegBin}`);
+            
             const ffprobeBin = ffmpegBin.replace(/ffmpeg(\.exe)?$/, "ffprobe$1");
+            log.debug(`findFFmpeg: checking ffprobe at ${ffprobeBin}`);
 
             // Verify ffprobe exists
             if (fs.existsSync(ffprobeBin)) {
                 ffmpegPath = ffmpegBin;
                 ffprobePath = ffprobeBin;
+                log.debug(`findFFmpeg: success, ffmpeg=${ffmpegPath}, ffprobe=${ffprobePath}`);
                 resolve({ ffmpeg: ffmpegPath, ffprobe: ffprobePath });
             } else {
+                log.debug(`findFFmpeg: ffprobe not at expected path, trying alternative`);
                 // On Windows, try without .exe extension
                 const altFfprobe = ffmpegBin.replace(/ffmpeg\.exe$/, "ffprobe.exe");
                 if (fs.existsSync(altFfprobe)) {
                     ffmpegPath = ffmpegBin;
                     ffprobePath = altFfprobe;
+                    log.debug(`findFFmpeg: success with alt ffprobe, ffmpeg=${ffmpegPath}, ffprobe=${ffprobePath}`);
                     resolve({ ffmpeg: ffmpegPath, ffprobe: ffprobePath });
                 } else {
+                    log.debug(`findFFmpeg: ffprobe not found at ${altFfprobe}`);
                     resolve(null);
                 }
             }
@@ -68,22 +92,32 @@ async function findFFmpeg() {
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number, timedOut: boolean}>}
  */
 function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
+    log.debug(`execPromise: executing command, timeout=${timeout}ms`);
+    
     return new Promise((resolve) => {
+        const startTime = Date.now();
         const proc = exec(cmd, { timeout }, (error, stdout, stderr) => {
+            const elapsed = Date.now() - startTime;
+            const exitCode = error && error.code !== "SIGTERM" && error.code !== "SIGKILL" ? error.code : 0;
+            
+            log.debug(`execPromise: completed in ${elapsed}ms, exitCode=${exitCode}, stdout.length=${stdout?.length || 0}, stderr.length=${stderr?.length || 0}`);
+            
             resolve({
                 stdout: stdout || "",
                 stderr: stderr || "",
-                exitCode: error && error.code !== "SIGTERM" && error.code !== "SIGKILL" ? error.code : 0,
+                exitCode: exitCode,
                 timedOut: false
             });
         });
 
-        proc.on("error", () => {
+        proc.on("error", (err) => {
+            log.error(`execPromise: process error: ${err.message}`);
             resolve({ stdout: "", stderr: "Process error", exitCode: 1, timedOut: false });
         });
 
         // Handle timeout - force kill the process
         proc.on("timeout", () => {
+            log.error(`execPromise: timeout after ${timeout}ms`);
             // Force kill the process tree on Windows
             if (process.platform === "win32" && proc.pid) {
                 try {
@@ -107,20 +141,26 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
  * @returns {Promise<{valid: boolean, error: string|null}>}
  */
 async function validateImage(filePath, ffmpegBin) {
+    log.debug(`validateImage: file=${filePath}, ffmpeg=${ffmpegBin}`);
+    
     // ffmpeg -v error -i input.jpg -f null -
     // Exit code 0 means valid, non-zero means error
     const escapedPath = escapePathForCmd(filePath);
     const escapedFfmpeg = escapePathForCmd(ffmpegBin);
     const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
+    
+    log.debug(`validateImage: running command: ${cmd}`);
 
     const result = await execPromise(cmd, VALIDATION_TIMEOUT);
 
     if (result.exitCode === 0) {
+        log.debug(`validateImage: valid, file=${path.basename(filePath)}`);
         return { valid: true, error: null };
     }
 
     // Check if error is about format not found (corrupt file)
     const errorMsg = result.stderr || result.stdout || "Unknown error";
+    log.debug(`validateImage: invalid, file=${path.basename(filePath)}, error=${errorMsg.substring(0, 100)}`);
     return { valid: false, error: `ffmpeg: ${errorMsg.substring(0, 100)}` };
 }
 
@@ -131,25 +171,33 @@ async function validateImage(filePath, ffmpegBin) {
  * @returns {Promise<{valid: boolean, error: string|null}>}
  */
 async function validateVideo(filePath, ffprobeBin) {
+    log.debug(`validateVideo: file=${filePath}, ffprobe=${ffprobeBin}`);
+    
     // ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 input.mp4
     // Exit code 0 with duration output means valid
     const escapedPath = escapePathForCmd(filePath);
     const escapedFfprobe = escapePathForCmd(ffprobeBin);
     const cmd = `${escapedFfprobe} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ${escapedPath}`;
+    
+    log.debug(`validateVideo: running command: ${cmd}`);
 
     const result = await execPromise(cmd, VALIDATION_TIMEOUT);
 
     if (result.exitCode !== 0) {
+        log.debug(`validateVideo: invalid (exit code), file=${path.basename(filePath)}, exitCode=${result.exitCode}`);
         return { valid: false, error: `ffprobe exit code ${result.exitCode}` };
     }
 
     const output = result.stdout.trim();
+    log.debug(`validateVideo: output="${output}"`);
 
     // If we got a duration number, file is valid
     if (output && !isNaN(parseFloat(output))) {
+        log.debug(`validateVideo: valid, file=${path.basename(filePath)}, duration=${output}`);
         return { valid: true, error: null };
     }
 
+    log.debug(`validateVideo: invalid (no duration), file=${path.basename(filePath)}, output="${output.substring(0, 50)}"`);
     return { valid: false, error: `ffprobe: no duration found (${output.substring(0, 50)})` };
 }
 
@@ -160,19 +208,25 @@ async function validateVideo(filePath, ffprobeBin) {
  * @returns {Promise<{valid: boolean, error: string|null}>}
  */
 async function validateVideoDeep(filePath, ffmpegBin) {
+    log.debug(`validateVideoDeep: file=${filePath}, ffmpeg=${ffmpegBin}`);
+    
     // ffmpeg -v error -i input.mp4 -f null -
     // This decodes the entire video stream and reports any errors
     const escapedPath = escapePathForCmd(filePath);
     const escapedFfmpeg = escapePathForCmd(ffmpegBin);
     const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
+    
+    log.debug(`validateVideoDeep: running deep validation command, timeout=${VALIDATION_TIMEOUT * 3}ms`);
 
     const result = await execPromise(cmd, VALIDATION_TIMEOUT * 3); // Allow more time for deep validation
 
     if (result.exitCode === 0) {
+        log.debug(`validateVideoDeep: valid (deep), file=${path.basename(filePath)}`);
         return { valid: true, error: null };
     }
 
     const errorMsg = result.stderr || result.stdout || "Unknown decode error";
+    log.debug(`validateVideoDeep: invalid (deep), file=${path.basename(filePath)}, error=${errorMsg.substring(0, 100)}`);
     return { valid: false, error: `ffmpeg decode: ${errorMsg.substring(0, 100)}` };
 }
 
@@ -186,18 +240,25 @@ async function validateVideoDeep(filePath, ffmpegBin) {
  * @returns {Promise<{valid: boolean, error: string|null}>}
  */
 async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false) {
+    log.debug(`validateFile: path=${filePath}, type=${type}, deep=${deep}`);
+    
     // First check if file exists
     if (!fs.existsSync(filePath)) {
+        log.debug(`validateFile: file does not exist: ${filePath}`);
         return { valid: false, error: "File does not exist" };
     }
 
     // Check file size - empty or very small files are likely corrupt
     try {
         const stats = fs.statSync(filePath);
+        log.debug(`validateFile: file size=${stats.size} bytes`);
+        
         if (stats.size === 0) {
+            log.debug(`validateFile: file is empty: ${filePath}`);
             return { valid: false, error: "File is empty" };
         }
     } catch (err) {
+        log.error(`validateFile: cannot stat file ${filePath}: ${err.message}`);
         return { valid: false, error: "Cannot stat file" };
     }
 
@@ -222,6 +283,8 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false)
  * @returns {Promise<{valid: number, invalid: number, errors: Array}>}
  */
 async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel = 10, deep = false) {
+    log.debug(`validateFiles: count=${files.length}, maxParallel=${maxParallel}, deep=${deep}`);
+    
     let valid = 0;
     let invalid = 0;
     const errors = [];
@@ -242,6 +305,8 @@ async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel =
             }
 
             const file = files[currentIndex];
+            log.debug(`validateFiles: processing file ${currentIndex + 1}/${files.length}: ${file.path}`);
+            
             const result = await validateFile(file.path, file.type, ffmpegPaths.ffmpeg, ffmpegPaths.ffprobe, deep);
 
             if (progressCallback) {
@@ -262,12 +327,15 @@ async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel =
     }
 
     // Start maxParallel workers
+    log.debug(`validateFiles: starting ${Math.min(maxParallel, files.length)} workers`);
     const workers = [];
     for (let i = 0; i < Math.min(maxParallel, files.length); i++) {
         workers.push(worker());
     }
 
     await Promise.all(workers);
+    
+    log.debug(`validateFiles: complete, valid=${valid}, invalid=${invalid}, errors=${errors.length}`);
 
     return { valid, invalid, errors };
 }
@@ -278,6 +346,7 @@ async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel =
  */
 async function isFFmpegAvailable() {
     const result = await findFFmpeg();
+    log.debug(`isFFmpegAvailable: ${result !== null}`);
     return result !== null;
 }
 

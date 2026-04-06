@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { scanExportDirectory } = require("./file_scanner");
 const { isFFmpegAvailable, getFFmpegPaths, validateFiles, validateFile, validateVideoDeep } = require("./ffmpeg_validator");
-const { loadSnapshots } = require("../utils/helper");
+const { loadSnapshots, logMessage } = require("../utils/helper");
 const paths = require("../utils/paths");
 
 const MAX_PARALLEL = 10;
@@ -16,10 +16,22 @@ const consoleColors = {
 };
 
 const log = {
-    info: (msg) => console.log(`📢: ${consoleColors.cyan} ${msg} ${consoleColors.reset}`),
-    success: (msg) => console.log(`✅ ${consoleColors.green} ${msg} ${consoleColors.reset}`),
-    error: (msg) => console.log(`❌ ${consoleColors.red} ${msg} ${consoleColors.reset}`),
-    warn: (msg) => console.log(`⚠️ ${consoleColors.yellow} ${msg} ${consoleColors.reset}`),
+    info: (msg) => {
+        console.log(`📢: ${consoleColors.cyan} ${msg} ${consoleColors.reset}`);
+        logMessage.valid(`[VALID] ${msg}`);
+    },
+    success: (msg) => {
+        console.log(`✅ ${consoleColors.green} ${msg} ${consoleColors.reset}`);
+        logMessage.valid(`[VALID] ${msg}`);
+    },
+    error: (msg) => {
+        console.log(`❌ ${consoleColors.red} ${msg} ${consoleColors.reset}`);
+        logMessage.error(`[VALID] ${msg}`);
+    },
+    warn: (msg) => {
+        console.log(`⚠️ ${consoleColors.yellow} ${msg} ${consoleColors.reset}`);
+        logMessage.warn(`[VALID] ${msg}`);
+    },
     dryrun: (msg) => console.log(`🔸 [DRY-RUN] ${msg}`),
     deleted: (msg) => console.log(`🗑️ [DELETED] ${msg}`)
 };
@@ -70,9 +82,10 @@ function printProgress(current, total, width = 30) {
 function deleteFile(filePath) {
     try {
         fs.unlinkSync(filePath);
+        logMessage.valid(`[VALID] Deleted file: ${filePath}`);
         return true;
     } catch (err) {
-        log.error(`Failed to delete ${filePath}: ${err.message}`);
+        logMessage.error(`[VALID] Failed to delete ${filePath}: ${err.message}`);
         return false;
     }
 }
@@ -96,6 +109,8 @@ async function runValidation(options = {}) {
         ignoreSnapshots = false
     } = options;
 
+    logMessage.valid(`=== Starting file validation: dryRun=${dryRun}, verbose=${verbose}, type=${type}, deep=${deep}, exportPath=${exportPath} ===`);
+    
     const startTime = Date.now();
     let totalScanned = 0;
     let totalValid = 0;
@@ -115,41 +130,60 @@ async function runValidation(options = {}) {
     const snapshotsByChannel = new Map();
     if (!ignoreSnapshots) {
         log.info(`Loading snapshots to skip pre-validated files...`);
+        logMessage.valid(`[VALID] Loading snapshots from export directory: ${exportPath}`);
+        
         const entries = fs.readdirSync(exportPath, { withFileTypes: true });
+        let totalSnapshotEntries = 0;
+        
         for (const entry of entries) {
             if (entry.isDirectory() && entry.name !== "snapshots") {
                 const channelPath = path.join(exportPath, entry.name);
                 const snapshots = loadSnapshots(channelPath);
                 if (snapshots.size > 0) {
                     snapshotsByChannel.set(channelPath, snapshots);
+                    totalSnapshotEntries += snapshots.size;
                     log.info(`Loaded ${snapshots.size} snapshot entries for '${entry.name}'`);
                 }
             }
         }
+        logMessage.valid(`[VALID] Loaded ${totalSnapshotEntries} total snapshot entries across ${snapshotsByChannel.size} channels`);
+    } else {
+        logMessage.valid(`[VALID] Ignoring snapshots (ignoreSnapshots=true)`);
     }
 
     // Check ffmpeg availability
     log.info(`Checking ffmpeg availability...`);
+    logMessage.valid(`[VALID] Checking ffmpeg availability`);
+    
     const ffmpegAvailable = await isFFmpegAvailable();
     if (!ffmpegAvailable) {
         log.error(`ffmpeg/ffprobe not found in PATH. Please install ffmpeg first.`);
+        logMessage.error(`[VALID] ffmpeg not found`);
         process.exit(1);
     }
 
     const ffmpegPaths = await getFFmpegPaths();
     log.success(`Found ffmpeg: ${ffmpegPaths.ffmpeg}`);
     log.success(`Found ffprobe: ${ffmpegPaths.ffprobe}`);
+    logMessage.valid(`[VALID] ffmpeg: ${ffmpegPaths.ffmpeg}, ffprobe: ${ffmpegPaths.ffprobe}`);
 
     // Check export directory
     if (!fs.existsSync(exportPath)) {
         log.error(`Export directory not found: ${exportPath}`);
+        logMessage.error(`[VALID] Export directory not found: ${exportPath}`);
         process.exit(1);
     }
 
     // Scan for files
     log.info(`Scanning export directory: ${exportPath}`);
+    logMessage.valid(`[VALID] Scanning directory: ${exportPath}`);
+    
+    const scanStart = Date.now();
     let files = scanExportDirectory(exportPath);
+    const scanTime = Date.now() - scanStart;
     totalScanned = files.length;
+    
+    logMessage.valid(`[VALID] Scan complete: found ${totalScanned} files in ${scanTime}ms`);
 
     if (files.length === 0) {
         log.warn(`No media files found in export directory`);
@@ -160,18 +194,25 @@ async function runValidation(options = {}) {
 
     // Filter by type if specified
     if (type !== "all") {
+        const oldCount = files.length;
         files = files.filter(f => f.type === type);
         log.info(`Filtered to ${files.length} ${type} files`);
+        logMessage.valid(`[VALID] Type filter: ${type}, filtered ${oldCount} -> ${files.length}`);
     }
 
     // Process files
     log.info(`Validating files (max ${MAX_PARALLEL} parallel)...`);
+    logMessage.valid(`[VALID] Starting validation: count=${files.length}, maxParallel=${MAX_PARALLEL}, deep=${deep}`);
 
     let lastProgressUpdate = Date.now();
     const PROGRESS_UPDATE_INTERVAL = 500;
+    const validationStart = Date.now();
+    let validationCount = 0;
+    let validationErrors = 0;
 
     const progressCallback = (file, result) => {
         const now = Date.now();
+        validationCount++;
 
         // Check if this file is in any snapshot (skip validation if so)
         if (snapshotsByChannel.size > 0) {
@@ -186,6 +227,7 @@ async function runValidation(options = {}) {
                     if (snapshots.has(relativeToChannel)) {
                         // File is in snapshot - skip validation
                         totalSkipped++;
+                        logMessage.cache(`[VALID] Skipped (snapshot): ${file.relativePath}`);
                         if (verbose) {
                             log.info(`Skipped (snapshot): ${file.relativePath}`);
                         }
@@ -197,18 +239,21 @@ async function runValidation(options = {}) {
         }
 
         if (verbose || now - lastProgressUpdate >= PROGRESS_UPDATE_INTERVAL) {
-            printProgress(totalValid + totalInvalid + totalErrors, files.length);
+            printProgress(totalValid + totalInvalid + validationErrors, files.length);
             lastProgressUpdate = now;
         }
 
         if (!result.valid) {
             totalInvalid++;
+            validationErrors++;
             errorEntries.push({
                 path: file.relativePath,
                 size: file.size,
                 error: result.error,
                 timestamp: new Date().toISOString()
             });
+            
+            logMessage.warn(`[VALID] File invalid: ${file.relativePath}, size=${formatBytes(file.size)}, error=${result.error}`);
 
             if (dryRun) {
                 log.dryrun(`Would delete: ${file.relativePath} (${formatBytes(file.size)}) - ${result.error}`);
@@ -230,10 +275,14 @@ async function runValidation(options = {}) {
             if (verbose) {
                 log.success(`Valid: ${file.relativePath}`);
             }
+            logMessage.valid(`[VALID] File valid: ${file.relativePath}`);
         }
     };
 
-    await validateFiles(files, ffmpegPaths, progressCallback, MAX_PARALLEL, deep);
+    const validationResult = await validateFiles(files, ffmpegPaths, progressCallback, MAX_PARALLEL, deep);
+    const validationTime = Date.now() - validationStart;
+    
+    logMessage.valid(`[VALID] Validation complete: validated=${validationCount}, valid=${totalValid}, invalid=${totalInvalid}, errors=${validationErrors}, time=${validationTime}ms`);
 
     // Clear progress line
     process.stdout.write("\r" + " ".repeat(80) + "\r");
@@ -253,9 +302,11 @@ async function runValidation(options = {}) {
     } else {
         log.info(`Deleted: ${totalDeleted} files`);
     }
-    log.info(`Errors:  ${totalErrors}`);
+    log.info(`Errors:  ${validationErrors}`);
     log.info(`Duration: ${formatDuration((Date.now() - startTime) / 1000)}`);
     console.log("=".repeat(50));
+
+    logMessage.valid(`=== Validation summary: total=${totalScanned}, valid=${totalValid}, invalid=${totalInvalid}, skipped=${totalSkipped}, deleted=${totalDeleted}, errors=${validationErrors}, duration=${formatDuration((Date.now() - startTime) / 1000)} ===`);
 
     return {
         totalScanned,
@@ -263,7 +314,7 @@ async function runValidation(options = {}) {
         totalInvalid,
         totalDeleted,
         totalSkipped,
-        errors: totalErrors
+        errors: validationErrors
     };
 }
 
