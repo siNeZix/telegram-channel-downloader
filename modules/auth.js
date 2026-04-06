@@ -39,23 +39,21 @@ const parseFloodWaitSeconds = (err) => {
 };
 
 const initAuth = async (otpPreference = OTP_METHOD.APP) => {
-	// Debug: Check what credentials we have
-	console.log('[DEBUG] initAuth called');
 	const credentials = getCredentials();
-	console.log('[DEBUG] credentials:', JSON.stringify(credentials));
-	const { apiId, apiHash, sessionId } = credentials;
-	console.log('[DEBUG] apiId:', apiId, 'apiHash:', apiHash ? '***' : 'undefined', 'sessionId:', sessionId ? '***' : 'undefined');
-	
+	const { apiId, apiHash, sessionId: savedSessionId } = credentials;
+
+	logMessage.auth(`Auth init: apiId=${apiId ? "present" : "MISSING"}, sessionId=${savedSessionId ? "present" : "empty"}, otpPreference=${otpPreference}`);
+
 	if (!apiId || !apiHash) {
-		console.error('[ERROR] Missing apiId or apiHash in credentials');
-		throw new Error('Missing apiId or apiHash in config.json');
+		logMessage.error("[AUTH] Missing apiId or apiHash in credentials");
+		throw new Error("Missing apiId or apiHash in config.json");
 	}
-	
-	// Create StringSession from sessionId or use empty string for new session
-	const stringSession = sessionId ? new StringSession(sessionId) : new StringSession('');
-	console.log('[DEBUG] StringSession created:', stringSession ? 'yes' : 'no');
-	
-	const client = new TelegramClient(stringSession, apiId, apiHash, {
+
+	// Create StringSession from savedSessionId or use empty string for new session
+	const stringSession = savedSessionId ? new StringSession(savedSessionId) : new StringSession("");
+	logMessage.auth(`StringSession created: ${savedSessionId ? "resumed from saved session" : "new session"}`);
+
+	const clientConfig = {
 		connectionRetries: 5,
 		baseLogger: new Logger("error"),
 		deviceModel: "PC",
@@ -63,94 +61,100 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 		appVersion: "4.8.1",
 		langCode: "en",
 		systemLangCode: "en",
-	});
-	
+	};
+	logMessage.auth(`Creating TelegramClient with config: deviceModel=${clientConfig.deviceModel}, appVersion=${clientConfig.appVersion}, connectionRetries=${clientConfig.connectionRetries}`);
+
+	const client = new TelegramClient(stringSession, apiId, apiHash, clientConfig);
+	logMessage.auth("TelegramClient instantiated");
+
 	try {
-		if (!sessionId) {
-			otpPreference = await selectInput(
-				"Where do you want the login OTP:",
-				[OTP_METHOD.APP, OTP_METHOD.SMS],
-			);
+		if (!savedSessionId) {
+			logMessage.auth("No saved session - requesting OTP method from user");
+			otpPreference = await selectInput("Where do you want the login OTP:", [OTP_METHOD.APP, OTP_METHOD.SMS]);
+		} else {
+			logMessage.auth("Saved session exists, attempting to resume without OTP");
 		}
 
 		const forceSMS = otpPreference == OTP_METHOD.SMS ? true : false;
+		logMessage.auth(`Starting auth flow: forceSMS=${forceSMS}, maxRetries=${MAX_AUTH_RETRIES}`);
+
 		for (let attempt = 1; attempt <= MAX_AUTH_RETRIES; attempt++) {
 			try {
+				logMessage.auth(`Auth attempt ${attempt}/${MAX_AUTH_RETRIES}`);
 				await client.start({
 					phoneNumber: async () => {
+						logMessage.auth("Requesting phone number from user");
 						const phoneNumber = await mobileNumberInput();
 						// Telegram auth API expects international number; normalize to + prefix.
-						return phoneNumber.startsWith("+")
-							? phoneNumber
-							: `+${phoneNumber}`;
+						const normalized = phoneNumber.startsWith("+") ? phoneNumber : `+${phoneNumber}`;
+						logMessage.auth(`Phone number received (normalized): ${normalized.substring(0, 5)}***`);
+						return normalized;
 					},
-					password: async () => await textInput("Enter your password"),
+					password: async () => {
+						logMessage.auth("Requesting 2FA password from user");
+						return await textInput("Enter your password");
+					},
 					phoneCode: async () => {
-						logMessage.info(
-							"Enter the code you received in Telegram app or by SMS",
-						);
+						logMessage.info("Enter the code you received in Telegram app or by SMS");
+						logMessage.auth("Requesting OTP code from user");
 						return await optInput();
 					},
 
 					forceSMS,
 					onError: (err) => {
 						const errText = getErrorText(err);
+						logMessage.auth(`Auth error callback triggered: ${errText}`);
 						if (errText.includes("PHONE_NUMBER_INVALID")) {
-							logMessage.error(
-								"Phone number is invalid. Use full international format, e.g. +14155552671."
-							);
+							logMessage.error("Phone number is invalid. Use full international format, e.g. +14155552671.");
 							return;
 						}
 						if (errText.includes("PHONE_CODE_INVALID")) {
-							logMessage.error(
-								"OTP code is invalid. Please try again carefully."
-							);
+							logMessage.error("OTP code is invalid. Please try again carefully.");
 							return;
 						}
 						if (errText.includes("PHONE_CODE_EXPIRED")) {
-							logMessage.error(
-								"OTP expired. Restart login to request a new code."
-							);
+							logMessage.error("OTP expired. Restart login to request a new code.");
 							return;
 						}
 						if (errText.includes("FLOOD_WAIT")) {
-							logMessage.error(
-								"Too many attempts. Telegram temporarily blocked new login attempts (FLOOD_WAIT)."
-							);
+							logMessage.error("Too many attempts. Telegram temporarily blocked new login attempts (FLOOD_WAIT).");
 							return;
 						}
-						logMessage.error(errText);
+						logMessage.error(`[AUTH] Unexpected auth error: ${errText}`);
 					},
 				});
+				logMessage.auth(`Auth attempt ${attempt} succeeded`);
 				break;
 			} catch (err) {
 				const floodSeconds = parseFloodWaitSeconds(err);
+				logMessage.auth(`Auth attempt ${attempt} failed: ${err?.errorMessage || err?.message}, floodSeconds=${floodSeconds}`);
 				if (floodSeconds && attempt < MAX_AUTH_RETRIES) {
 					const waitSeconds = Math.ceil(floodSeconds) + 2;
-					logMessage.error(
-						`Auth flood detected. Waiting ${waitSeconds}s and retrying (${attempt}/${MAX_AUTH_RETRIES}).`
-					);
-					await new Promise((resolve) =>
-						setTimeout(resolve, waitSeconds * 1000)
-					);
+					logMessage.warn(`[AUTH] Flood wait detected. Waiting ${waitSeconds}s before retry ${attempt + 1}/${MAX_AUTH_RETRIES}.`);
+					logMessage.debug(`[AUTH] Flood wait details: raw error=${err?.errorMessage || err?.message}, parsed seconds=${floodSeconds}, calculated wait=${waitSeconds}`);
+					await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
 					continue;
 				}
+				logMessage.error(`[AUTH] Auth failed after ${attempt} attempts: ${err?.message || err}`);
 				throw err;
 			}
 		}
 
-		logMessage.success("You should now be connected.");
-		if (!sessionId) {
-			sessionId = client.session.save();
-			updateCredentials({ sessionId });
-			logMessage.info(
-				`To avoid login again and again session id has been saved to config.json, please don't share it with anyone`,
-			);
+		logMessage.success("[AUTH] You should now be connected.");
+		if (!savedSessionId) {
+			const newSessionId = client.session.save();
+			logMessage.auth(`Session saved (first login): ${newSessionId.substring(0, 20)}...`);
+			updateCredentials({ sessionId: newSessionId });
+			logMessage.info(`[AUTH] Session id has been saved to config.json`);
+		} else {
+			logMessage.auth("Session resumed successfully from saved sessionId");
 		}
 
 		return client;
 	} catch (err) {
-		logMessage.error(err);
+		logMessage.error(`[AUTH] Fatal auth error: ${err?.message || err}`);
+		// Пробрасываем ошибку, чтобы клиент не использовался в некорректном состоянии
+		throw err;
 	}
 };
 
