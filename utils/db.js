@@ -3,6 +3,16 @@ const fs = require("fs");
 const path = require("path");
 const paths = require("./paths");
 
+// Ленивая загрузка helper.js для разрыва циклической зависимости
+// (helper.js требует db.js, а db.js требует logMessage из helper.js)
+let _logMessage = null;
+const logMessage = () => {
+	if (!_logMessage) {
+		_logMessage = require("./helper").logMessage;
+	}
+	return _logMessage;
+};
+
 // Структура для хранения открытых соединений с БД для каждого канала
 const dbConnections = new Map();
 
@@ -15,23 +25,32 @@ const dbConnections = new Map();
 const initDatabase = (channelId, outputFolder) => {
 	const dbPath = paths.getChannelDbPath(channelId);
 	
+	logMessage().db(`[DB] initDatabase: channelId=${channelId}, dbPath=${dbPath}`);
+	
 	// Проверяем, есть ли уже открытое соединение
 	if (dbConnections.has(dbPath)) {
+		logMessage().db(`[DB] Reusing existing connection for ${dbPath}`);
 		return dbConnections.get(dbPath);
 	}
 	
 	// Создаем директорию, если не существует
 	if (!fs.existsSync(outputFolder)) {
+		logMessage().db(`[DB] Creating output directory: ${outputFolder}`);
 		fs.mkdirSync(outputFolder, { recursive: true });
 	}
 	
 	// Открываем/создаем базу данных
+	const startTime = Date.now();
 	const db = new Database(dbPath);
+	const initTime = Date.now() - startTime;
+	logMessage().db(`[DB] Database opened in ${initTime}ms: ${dbPath}`);
 	
 	// Включаем WAL режим для лучшей производительности
+	logMessage().db(`[DB] Setting PRAGMA journal_mode=WAL`);
 	db.pragma("journal_mode = WAL");
 	
 	// Создаем таблицу, если не существует
+	logMessage().db(`[DB] Creating tables if not exist`);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS messages (
 			id INTEGER NOT NULL,
@@ -48,19 +67,24 @@ const initDatabase = (channelId, outputFolder) => {
 		const tableInfo = db.prepare("PRAGMA table_info(messages)").all();
 		const hasDownloadedColumn = tableInfo.some(col => col.name === 'downloaded');
 		if (!hasDownloadedColumn) {
+			logMessage().db(`[DB] Migration: adding 'downloaded' column`);
 			db.exec("ALTER TABLE messages ADD COLUMN downloaded INTEGER DEFAULT 0");
+		} else {
+			logMessage().db(`[DB] Migration check: 'downloaded' column exists`);
 		}
 	} catch (e) {
-		// Игнорируем ошибку, если колонка уже существует
+		logMessage().db(`[DB] Migration check skipped or column exists: ${e.message}`);
 	}
 	
 	// Создаем индекс для быстрой сортировки по дате
+	logMessage().db(`[DB] Creating indexes if not exist`);
 	db.exec(`
 		CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)
 	`);
 	
 	// Сохраняем соединение в кэш
 	dbConnections.set(dbPath, db);
+	logMessage().db(`[DB] Connection cached. Total connections: ${dbConnections.size}`);
 	
 	return db;
 };
@@ -73,7 +97,9 @@ const initDatabase = (channelId, outputFolder) => {
  */
 const getDatabase = (channelId, outputFolder) => {
 	const dbPath = paths.getChannelDbPath(channelId);
-	return dbConnections.get(dbPath) || null;
+	const db = dbConnections.get(dbPath) || null;
+	logMessage().db(`[DB] getDatabase: channelId=${channelId}, found=${!!db}, path=${dbPath}`);
+	return db;
 };
 
 /**
@@ -84,7 +110,10 @@ const getDatabase = (channelId, outputFolder) => {
  * @param {Array} processedMessages - Массив обработанных сообщений (упрощенный формат)
  */
 const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) => {
+	const startTime = Date.now();
 	const db = initDatabase(channelId, outputFolder);
+	
+	logMessage().db(`[DB] saveMessages: channelId=${channelId}, rawCount=${rawMessages.length}, processedCount=${processedMessages.length}`);
 	
 	// Используем INSERT ... ON CONFLICT DO UPDATE, чтобы не затирать статус downloaded
 	const insertRaw = db.prepare(`
@@ -96,6 +125,9 @@ const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) =
 			processed_json = excluded.processed_json,
 			downloaded = COALESCE((SELECT downloaded FROM messages WHERE id = excluded.id), 0)
 	`);
+	
+	let insertedCount = 0;
+	let updatedCount = 0;
 	
 	const insertMany = db.transaction((raw, processed) => {
 		// Создаем Map для быстрого поиска обработанных сообщений по ID
@@ -112,17 +144,27 @@ const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) =
 			const processedMsg = processedMap.get(rawMsg.id);
 			const dateTimestamp = rawMsg.date ? new Date(rawMsg.date).getTime() : null;
 			
-			insertRaw.run(
+			const result = insertRaw.run(
 				rawMsg.id,
 				dateTimestamp,
 				JSON.stringify(rawMsg),
 				processedMsg ? JSON.stringify(processedMsg) : null,
 				rawMsg.id // Для SELECT downloaded FROM messages WHERE id = ?
 			);
+			
+			// SQLite returns changes > 0 if a new row was inserted or updated
+			if (result.changes > 0) {
+				// Check if it was actually an insert or update
+				// This is approximate since ON CONFLICT always results in changes=1 on conflict
+				insertedCount++;
+			}
 		}
 	});
 	
 	insertMany(rawMessages, processedMessages);
+	const elapsed = Date.now() - startTime;
+	
+	logMessage().db(`[DB] saveMessages complete: inserted/updated=${insertedCount}, time=${elapsed}ms`);
 };
 
 /**
@@ -134,10 +176,18 @@ const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) =
  */
 const messageExists = (channelId, outputFolder, messageId) => {
 	const db = getDatabase(channelId, outputFolder);
-	if (!db) return false;
+	if (!db) {
+		logMessage().db(`[DB] messageExists: channelId=${channelId}, msgId=${messageId}, result=NULL_DB`);
+		return false;
+	}
 	
+	const startTime = Date.now();
 	const result = db.prepare("SELECT 1 FROM messages WHERE id = ?").get(messageId);
-	return !!result;
+	const elapsed = Date.now() - startTime;
+	const exists = !!result;
+	
+	logMessage().db(`[DB] messageExists: msgId=${messageId}, exists=${exists}, time=${elapsed}ms`);
+	return exists;
 };
 
 /**
@@ -150,8 +200,13 @@ const getMessageCount = (channelId, outputFolder) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) return 0;
 	
+	const startTime = Date.now();
 	const result = db.prepare("SELECT COUNT(*) as count FROM messages").get();
-	return result ? result.count : 0;
+	const elapsed = Date.now() - startTime;
+	const count = result ? result.count : 0;
+	
+	logMessage().db(`[DB] getMessageCount: channelId=${channelId}, count=${count}, time=${elapsed}ms`);
+	return count;
 };
 
 /**
@@ -163,7 +218,10 @@ const getMessageCount = (channelId, outputFolder) => {
  */
 function* getMessagesForExport(channelId, outputFolder, type = "all") {
 	const db = getDatabase(channelId, outputFolder);
-	if (!db) return;
+	if (!db) {
+		logMessage().db(`[DB] getMessagesForExport: channelId=${channelId}, type=${type}, result=NULL_DB`);
+		return;
+	}
 	
 	const query = type === "raw" 
 		? "SELECT id, date, raw_json FROM messages ORDER BY id ASC"
@@ -171,11 +229,15 @@ function* getMessagesForExport(channelId, outputFolder, type = "all") {
 			? "SELECT id, date, processed_json FROM messages ORDER BY id ASC"
 			: "SELECT id, date, raw_json, processed_json FROM messages ORDER BY id ASC";
 	
+	logMessage().db(`[DB] getMessagesForExport: channelId=${channelId}, type=${type}, query started`);
 	const stmt = db.prepare(query);
 	
+	let count = 0;
 	for (const row of stmt.iterate()) {
 		yield row;
+		count++;
 	}
+	logMessage().db(`[DB] getMessagesForExport: yielded ${count} rows`);
 }
 
 /**
@@ -187,15 +249,20 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 	const rawFilePath = paths.getRawMessagesPath(channelId);
 	const processedFilePath = paths.getProcessedMessagesPath(channelId);
 	
+	logMessage().db(`[DB] exportToJsonFiles: channelId=${channelId}`);
+	
 	// Очищаем существующие файлы
 	if (fs.existsSync(rawFilePath)) {
+		logMessage().db(`[DB] Deleting existing raw file: ${rawFilePath}`);
 		fs.unlinkSync(rawFilePath);
 	}
 	if (fs.existsSync(processedFilePath)) {
+		logMessage().db(`[DB] Deleting existing processed file: ${processedFilePath}`);
 		fs.unlinkSync(processedFilePath);
 	}
 	
 	let count = 0;
+	const startTime = Date.now();
 	
 	for (const row of getMessagesForExport(channelId, outputFolder, "all")) {
 		// Экспортируем raw_json
@@ -211,6 +278,9 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 		count++;
 	}
 	
+	const elapsed = Date.now() - startTime;
+	logMessage().db(`[DB] exportToJsonFiles: exported ${count} rows in ${elapsed}ms`);
+	
 	return count;
 };
 
@@ -218,14 +288,17 @@ const exportToJsonFiles = (channelId, outputFolder) => {
  * Закрывает все открытые соединения с базой данных
  */
 const closeAllConnections = () => {
+	logMessage().db(`[DB] closeAllConnections: closing ${dbConnections.size} connections`);
 	for (const [dbPath, db] of dbConnections) {
 		try {
 			db.close();
+			logMessage().db(`[DB] Closed connection: ${dbPath}`);
 		} catch (e) {
-			console.error(`Error closing database ${dbPath}:`, e.message);
+			logMessage().error(`[DB] Error closing database ${dbPath}: ${e.message}`);
 		}
 	}
 	dbConnections.clear();
+	logMessage().db(`[DB] All connections closed`);
 };
 
 /**
@@ -236,13 +309,19 @@ const closeDatabase = (outputFolder) => {
 	// Extract channelId from outputFolder path (last segment)
 	const channelId = path.basename(outputFolder);
 	const dbPath = paths.getChannelDbPath(channelId);
+	
+	logMessage().db(`[DB] closeDatabase: channelId=${channelId}, path=${outputFolder}`);
+	
 	if (dbConnections.has(dbPath)) {
 		try {
 			dbConnections.get(dbPath).close();
 			dbConnections.delete(dbPath);
+			logMessage().db(`[DB] Connection closed: ${dbPath}, remaining=${dbConnections.size}`);
 		} catch (e) {
-			console.error(`Error closing database ${dbPath}:`, e.message);
+			logMessage().error(`[DB] Error closing database ${dbPath}: ${e.message}`);
 		}
+	} else {
+		logMessage().db(`[DB] No connection found for: ${dbPath}`);
 	}
 };
 
@@ -255,13 +334,21 @@ const closeDatabase = (outputFolder) => {
  */
 const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
 	const db = getDatabase(channelId, outputFolder);
-	if (!db) return false;
+	if (!db) {
+		logMessage().db(`[DB] setFileDownloaded: channelId=${channelId}, msgId=${messageId}, status=${status}, result=NULL_DB`);
+		return false;
+	}
 	
+	const startTime = Date.now();
 	try {
-		db.prepare("UPDATE messages SET downloaded = ? WHERE id = ?").run(status, messageId);
-		return true;
+		const result = db.prepare("UPDATE messages SET downloaded = ? WHERE id = ?").run(status, messageId);
+		const elapsed = Date.now() - startTime;
+		const changes = result ? result.changes : 0;
+		
+		logMessage().db(`[DB] setFileDownloaded: msgId=${messageId}, status=${status}, changes=${changes}, time=${elapsed}ms`);
+		return changes > 0;
 	} catch (e) {
-		console.error(`Error setting downloaded flag for message ${messageId}:`, e.message);
+		logMessage().error(`[DB] Error setting downloaded flag for message ${messageId}: ${e.message}`);
 		return false;
 	}
 };
@@ -275,10 +362,18 @@ const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
  */
 const isFileDownloaded = (channelId, outputFolder, messageId) => {
 	const db = getDatabase(channelId, outputFolder);
-	if (!db) return false;
+	if (!db) {
+		logMessage().db(`[DB] isFileDownloaded: channelId=${channelId}, msgId=${messageId}, result=NULL_DB`);
+		return false;
+	}
 	
+	const startTime = Date.now();
 	const result = db.prepare("SELECT downloaded FROM messages WHERE id = ?").get(messageId);
-	return result ? result.downloaded === 1 : false;
+	const elapsed = Date.now() - startTime;
+	const downloaded = result ? result.downloaded === 1 : false;
+	
+	logMessage().db(`[DB] isFileDownloaded: msgId=${messageId}, downloaded=${downloaded}, time=${elapsed}ms`);
+	return downloaded;
 };
 
 /**
@@ -291,15 +386,23 @@ const isFileDownloaded = (channelId, outputFolder, messageId) => {
  */
 const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => {
 	const db = getDatabase(channelId, outputFolder);
-	if (!db) return 0;
+	if (!db) {
+		logMessage().db(`[DB] syncDownloadedFromSnapshots: channelId=${channelId}, snapshots=${snapshotFiles.size}, result=NULL_DB`);
+		return 0;
+	}
+	
+	logMessage().db(`[DB] syncDownloadedFromSnapshots: channelId=${channelId}, snapshotCount=${snapshotFiles.size}`);
 	
 	let updatedCount = 0;
+	let processedCount = 0;
 	
+	const startTime = Date.now();
 	const updateMany = db.transaction(() => {
 		for (const row of db.prepare("SELECT id, processed_json FROM messages WHERE downloaded = 0").iterate()) {
+			processedCount++;
 			try {
-				const processed = row.processed_json ? JSON.parse(row.processed_json) : null;
-				if (processed && processed.mediaPath && snapshotFiles.has(processed.mediaPath)) {
+				const processed_data = row.processed_json ? JSON.parse(row.processed_json) : null;
+				if (processed_data && processed_data.mediaPath && snapshotFiles.has(processed_data.mediaPath)) {
 					db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?").run(row.id);
 					updatedCount++;
 				}
@@ -310,6 +413,9 @@ const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => 
 	});
 	
 	updateMany();
+	const elapsed = Date.now() - startTime;
+	
+	logMessage().db(`[DB] syncDownloadedFromSnapshots: processed=${processedCount} rows, updated=${updatedCount}, time=${elapsed}ms`);
 	return updatedCount;
 };
 

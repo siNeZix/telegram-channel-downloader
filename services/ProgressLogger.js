@@ -105,7 +105,7 @@ class ProgressLogger {
         // Добавляем временную метку и состояние очереди
         const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
         logMessage.info(
-            `[${timestamp}] [Queue: ${this.activeDownloads}/${this.maxParallel}] Download progress: ${finished}/${this.totalFiles} (${percent}%), failed: ${this.failedDownloads}, speed: ${speedText}, ETA: ${eta}`
+            `[${timestamp}] [DL] [Queue: ${this.activeDownloads}/${this.maxParallel}] Download progress: ${finished}/${this.totalFiles} (${percent}%), failed: ${this.failedDownloads}, speed: ${speedText}, ETA: ${eta}`
         );
     }
 
@@ -149,7 +149,7 @@ class ProgressLogger {
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
         const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
         logMessage.info(
-            `[${timestamp}] Check progress: ${checked}/${total} (${percent}%), skipped: ${skipped}, new: ${newFiles}, elapsed: ${elapsed}s`
+            `[${timestamp}] [DL] Check progress: ${checked}/${total} (${percent}%), skipped: ${skipped}, new: ${newFiles}, elapsed: ${elapsed}s`
         );
     }
 }
