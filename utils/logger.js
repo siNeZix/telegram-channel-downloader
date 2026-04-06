@@ -18,6 +18,9 @@ const CURRENT_LOG_NAME = 'current.log';
 /** Регулярка для определения архивных логов по дате */
 const ARCHIVE_LOG_REGEX = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
 
+/** Timestamp последнего лога (для расчёта дельты) */
+let lastLogTimestamp = null;
+
 /**
  * Удалить ANSI escape-последовательности из строки
  * @param {string} str
@@ -109,7 +112,7 @@ function init() {
 }
 
 /**
- * Записать сообщение в лог
+ * Записать сообщение в лог с расчётом дельты времени
  * @param {string} level - Уровень лога (debug, info, success, warn, error)
  * @param {string} message - Сообщение (может содержать ANSI коды)
  */
@@ -119,8 +122,23 @@ function write(level, message) {
     }
 
     const cleanMessage = stripAnsi(message);
-    const timestamp = new Date().toISOString();
-    const fileLine = `[${timestamp}] [${level.toUpperCase()}] ${cleanMessage}\n`;
+    const now = new Date();
+    const timestamp = now.toISOString();
+    
+    // Рассчитываем дельту времени с момента последнего лога
+    let deltaStr = '';
+    if (lastLogTimestamp !== null) {
+        const deltaMs = now - lastLogTimestamp;
+        // Форматируем дельту для наглядности: ms или s.ms
+        if (deltaMs >= 1000) {
+            deltaStr = ` (+${(deltaMs / 1000).toFixed(2)}s)`;
+        } else {
+            deltaStr = ` (+${deltaMs}ms)`;
+        }
+    }
+    lastLogTimestamp = now;
+    
+    const fileLine = `[${timestamp}] [${level.toUpperCase()}]${deltaStr} ${cleanMessage}\n`;
 
     // Все пишем в debug.log
     debugStream.write(fileLine);
