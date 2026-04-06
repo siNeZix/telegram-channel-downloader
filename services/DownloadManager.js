@@ -2,10 +2,11 @@ const fs = require("fs");
 const path = require("path");
 const db = require("../utils/db");
 const paths = require("../utils/paths");
-const { 
-    getMediaType, 
-    getMediaPath, 
-    buildFileName, 
+const config = require("../utils/config");
+const {
+    getMediaType,
+    getMediaPath,
+    buildFileName,
     filterString,
     checkFileExist,
     addFileToCheckCache,
@@ -15,7 +16,7 @@ const {
     wait,
     loadSnapshots
 } = require("../utils/helper");
-const { createFloodState, MAX_PARALLEL_DOWNLOAD } = require("./FloodControl");
+const { createFloodState } = require("./FloodControl");
 const { ProgressLogger } = require("./ProgressLogger");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
@@ -546,5 +547,4 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
 module.exports = {
     DownloadManager,
     downloadMessagesByIds,
-    MAX_PARALLEL_DOWNLOAD
 };

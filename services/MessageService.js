@@ -1,10 +1,11 @@
 const path = require("path");
 const db = require("../utils/db");
 const paths = require("../utils/paths");
-const { 
-    getMediaType, 
-    getMediaPath, 
-    buildFileName, 
+const config = require("../utils/config");
+const {
+    getMediaType,
+    getMediaPath,
+    buildFileName,
     filterString,
     logMessage,
     loadSnapshots
@@ -12,9 +13,6 @@ const {
 const { createFloodState } = require("./FloodControl");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
-const MESSAGE_LIMIT = 200;
-const FAST_FORWARD_MESSAGE_LIMIT = 1000;
-const CHECK_PROGRESS_INTERVAL_FILES = 100;
 const CHECK_PROGRESS_INTERVAL_MS = 5000;
 
 /**
@@ -85,10 +83,12 @@ class MessageService {
 
         while (true) {
             const inFastForwardRange = fastForwardMode && (offsetId === 0 || offsetId > offsetId);
-            const messageLimit = inFastForwardRange ? FAST_FORWARD_MESSAGE_LIMIT : MESSAGE_LIMIT;
+            const messageLimit = inFastForwardRange
+                ? config.get('download.fastForwardMessageLimit')
+                : config.get('download.messageLimit');
             
             if (fastForwardMode && !inFastForwardRange) {
-                logMessage.info(`Reached last known position. Switching to normal batch size ${MESSAGE_LIMIT}`);
+                logMessage.info(`Reached last known position. Switching to normal batch size ${config.get('download.messageLimit')}`);
                 fastForwardMode = false;
             }
 
@@ -235,8 +235,5 @@ module.exports = {
     MessageService,
     processMessageMedia,
     shouldDownload,
-    MESSAGE_LIMIT,
-    FAST_FORWARD_MESSAGE_LIMIT,
-    CHECK_PROGRESS_INTERVAL_FILES,
     CHECK_PROGRESS_INTERVAL_MS
 };

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const config = require("../utils/config");
 const {
 	getMediaType,
 	logMessage,
@@ -26,20 +27,10 @@ const { createFloodState } = require("../services/FloodControl");
 const { ProgressLogger } = require("../services/ProgressLogger");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
-const MAX_PARALLEL_DOWNLOAD = 20;
-const MESSAGE_LIMIT = 200;
-
 // Флаг для будущих текстовых фильтров. Сейчас они отключены,
 // но логика оставлена в коде и может быть легко включена.
 const ENABLE_TEXT_FILTERS = false;
-const MIN_PARALLEL_DOWNLOAD = 2;
-const BASE_RPC_DELAY_SECONDS = 0.05;
 const MAX_RPC_RETRIES = 5;
-const PROGRESS_LOG_INTERVAL_SECONDS = 5;
-const FAST_FORWARD_MESSAGE_LIMIT = 1000;
-
-// Интервалы для логирования прогресса проверки файлов
-const CHECK_PROGRESS_INTERVAL_FILES = 100;
 const CHECK_PROGRESS_INTERVAL_MS = 5000;
 
 // Логирование прогресса проверки файлов
@@ -83,7 +74,7 @@ const logDownloadProgress = (
 	speedHistory,
 	totalBytesDownloaded,
 	activeDownloads = 0,
-	maxParallel = MAX_PARALLEL_DOWNLOAD,
+	maxParallel = config.get('download.maxParallel'),
 ) => {
 	const finished = success + failed;
 	const percent =
@@ -179,15 +170,16 @@ const maybeWaitCooldown = async (state) => {
 const runWithFloodControl = async (state, label, fn) => {
 	for (let attempt = 1; attempt <= MAX_RPC_RETRIES; attempt++) {
 		await maybeWaitCooldown(state);
-		if (BASE_RPC_DELAY_SECONDS > 0) {
-			await wait(BASE_RPC_DELAY_SECONDS);
+		const baseDelay = config.get('download.baseRpcDelaySeconds');
+		if (baseDelay > 0) {
+			await wait(baseDelay);
 		}
 		try {
 			const result = await fn();
 			state.successStreak += 1;
 			if (
 				state.successStreak >= 30 &&
-				state.currentParallelLimit < MAX_PARALLEL_DOWNLOAD
+				state.currentParallelLimit < config.get('download.maxParallel')
 			) {
 				state.currentParallelLimit += 1;
 				state.successStreak = 0;
@@ -200,7 +192,7 @@ const runWithFloodControl = async (state, label, fn) => {
 				state.consecutiveFloods += 1;
 				state.successStreak = 0;
 				state.currentParallelLimit = Math.max(
-					MIN_PARALLEL_DOWNLOAD,
+					config.get('download.minParallel'),
 					state.currentParallelLimit - 1,
 				);
 				state.cooldownUntil = Date.now() + (floodSeconds + 1) * 1000;
@@ -298,7 +290,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 	const { check: enableCheck = false, deep: deepValidation = false } = options;
 
 	logMessage.fetch(`=== Starting getMessages: channelId=${channelId}, check=${enableCheck}, deep=${deepValidation} ===`);
-	logMessage.fetch(`Config: MESSAGE_LIMIT=${MESSAGE_LIMIT}, FAST_FORWARD_MESSAGE_LIMIT=${FAST_FORWARD_MESSAGE_LIMIT}, lastKnownOffsetId=${lastKnownOffsetId}`);
+	logMessage.fetch(`Config: messageLimit=${config.get('download.messageLimit')}, fastForwardMessageLimit=${config.get('download.fastForwardMessageLimit')}, lastKnownOffsetId=${lastKnownOffsetId}`);
 
 	// Initialize FFmpeg for validation if needed
 	let ffmpegPaths = null;
@@ -384,14 +376,14 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 				fastForwardMode &&
 				(offsetId === 0 || offsetId > Number(lastKnownOffsetId));
 			const messageLimit = inFastForwardRange
-				? FAST_FORWARD_MESSAGE_LIMIT
-				: MESSAGE_LIMIT;
+				? config.get('download.fastForwardMessageLimit')
+				: config.get('download.messageLimit');
 			
 			logMessage.fetch(`Batch loop: offsetId=${offsetId}, fastForwardMode=${fastForwardMode}, inFastForwardRange=${inFastForwardRange}, messageLimit=${messageLimit}, lastKnownOffsetId=${lastKnownOffsetId}`);
 			
 			if (fastForwardMode && !inFastForwardRange) {
 				logMessage.info(
-					`[FETCH] Reached last known position (${lastKnownOffsetId}). Switching to normal batch size ${MESSAGE_LIMIT}`,
+					`[FETCH] Reached last known position (${lastKnownOffsetId}). Switching to normal batch size ${config.get('download.messageLimit')}`,
 				);
 				fastForwardMode = false;
 			}
@@ -564,7 +556,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 	
 					// Логирование прогресса проверки
 					const shouldLogCheck =
-						checkedFiles % CHECK_PROGRESS_INTERVAL_FILES === 0 ||
+						checkedFiles % config.get('download.checkProgressIntervalFiles') === 0 ||
 						Date.now() - lastCheckProgressLogAt >= CHECK_PROGRESS_INTERVAL_MS;
 					if (shouldLogCheck) {
 						logCheckProgress(
@@ -645,7 +637,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 			}
 
 			// Логируем оценку каждые 500 сообщений
-			if (totalFetched % 500 < MESSAGE_LIMIT) {
+			if (totalFetched % 500 < config.get('download.messageLimit')) {
 				// Добавляем информацию о проценте медиа для наглядности
 				const mediaPercent =
 					totalFetched > 0
@@ -940,7 +932,7 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 
 				// Логирование прогресса проверки
 				const shouldLogCheck =
-					checkedFiles % CHECK_PROGRESS_INTERVAL_FILES === 0 ||
+					checkedFiles % config.get('download.checkProgressIntervalFiles') === 0 ||
 					Date.now() - lastCheckProgressLogAt >= CHECK_PROGRESS_INTERVAL_MS;
 				if (shouldLogCheck) {
 					logCheckProgress(

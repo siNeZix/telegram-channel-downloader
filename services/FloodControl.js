@@ -1,10 +1,8 @@
 const { wait } = require('../utils/helper');
 const { logMessage } = require('../utils/helper');
+const config = require('../utils/config');
 
-const BASE_RPC_DELAY_SECONDS = 0.05;
 const MAX_RPC_RETRIES = 5;
-const MIN_PARALLEL_DOWNLOAD = 2;
-const MAX_PARALLEL_DOWNLOAD = 20;
 
 /**
  * Сервис для управления Flood Wait ограничениями Telegram API
@@ -12,10 +10,23 @@ const MAX_PARALLEL_DOWNLOAD = 20;
 class FloodControl {
     constructor() {
         this.cooldownUntil = 0;
-        this.currentParallelLimit = MAX_PARALLEL_DOWNLOAD;
+        this.currentParallelLimit = config.get('download.maxParallel');
         this.consecutiveFloods = 0;
         this.successStreak = 0;
-        logMessage.flood(`[FLOOD] FloodControl created: maxParallel=${MAX_PARALLEL_DOWNLOAD}, baseDelay=${BASE_RPC_DELAY_SECONDS}s`);
+        
+        // Слушатель для динамического обновления maxParallel
+        this.configListener = (changedKeys) => {
+            if (changedKeys.some(key => key.startsWith('download.maxParallel') || key === 'download')) {
+                const newMaxParallel = config.get('download.maxParallel');
+                if (this.currentParallelLimit > newMaxParallel) {
+                    this.currentParallelLimit = newMaxParallel;
+                    logMessage.flood(`[FLOOD] Config changed: maxParallel reduced to ${this.currentParallelLimit}`);
+                }
+            }
+        };
+        config.addListener(this.configListener);
+        
+        logMessage.flood(`[FLOOD] FloodControl created: maxParallel=${config.get('download.maxParallel')}, baseDelay=${config.get('download.baseRpcDelaySeconds')}s`);
     }
 
     /**
@@ -86,9 +97,10 @@ class FloodControl {
                 await wait(waitSeconds);
             }
             
-            if (BASE_RPC_DELAY_SECONDS > 0) {
-                logMessage.flood(`[FLOOD] Applying base delay: ${BASE_RPC_DELAY_SECONDS}s`);
-                await wait(BASE_RPC_DELAY_SECONDS);
+            const baseDelay = config.get('download.baseRpcDelaySeconds');
+            if (baseDelay > 0) {
+                logMessage.flood(`[FLOOD] Applying base delay: ${baseDelay}s`);
+                await wait(baseDelay);
             }
             
             try {
@@ -101,7 +113,8 @@ class FloodControl {
                 logMessage.flood(`[FLOOD] ${label} succeeded in ${elapsed}ms, successStreak=${this.successStreak}`);
                 
                 // Увеличиваем лимит параллельных загрузок при успешной серии
-                if (this.successStreak >= 30 && this.currentParallelLimit < MAX_PARALLEL_DOWNLOAD) {
+                const maxParallel = config.get('download.maxParallel');
+                if (this.successStreak >= 30 && this.currentParallelLimit < maxParallel) {
                     this.currentParallelLimit += 1;
                     this.successStreak = 0;
                     logMessage.flood(`[FLOOD] Increasing parallel limit to ${this.currentParallelLimit} (successStreak threshold reached)`);
@@ -117,8 +130,9 @@ class FloodControl {
                     this.consecutiveFloods += 1;
                     this.successStreak = 0;
                     const oldLimit = this.currentParallelLimit;
+                    const minParallel = config.get('download.minParallel');
                     this.currentParallelLimit = Math.max(
-                        MIN_PARALLEL_DOWNLOAD,
+                        minParallel,
                         this.currentParallelLimit - 1
                     );
                     this.cooldownUntil = Date.now() + (floodSeconds + 1) * 1000;
@@ -158,7 +172,7 @@ class FloodControl {
     reset() {
         const oldLimit = this.currentParallelLimit;
         this.cooldownUntil = 0;
-        this.currentParallelLimit = MAX_PARALLEL_DOWNLOAD;
+        this.currentParallelLimit = config.get('download.maxParallel');
         this.consecutiveFloods = 0;
         this.successStreak = 0;
         logMessage.flood(`[FLOOD] State reset: parallelLimit=${oldLimit} -> ${this.currentParallelLimit}`);
@@ -190,6 +204,4 @@ const createFloodState = () => {
 module.exports = {
     FloodControl,
     createFloodState,
-    MAX_PARALLEL_DOWNLOAD,
-    MIN_PARALLEL_DOWNLOAD
 };
