@@ -86,23 +86,53 @@ const runFullDownload = async (client, chId) => {
   let selectedChannelId = chId;
 
   if (!selectedChannelId) {
-    const dialogs = await getAllDialogs(client);
-    await searchOrListChannel(dialogs);
-    // Get channelId from file_helper after selection
+    // Проверяем, есть ли сохраненный выбор канала
     const lastSelection = getLastSelection();
-    selectedChannelId = lastSelection.channelId;
+    if (lastSelection.channelId) {
+      const lastChannelName = await getDialogName(client, lastSelection.channelId);
+      logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
+      const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
+      
+      if (!useLastChannel) {
+        // Пользователь хочет выбрать другой канал
+        const dialogs = await getAllDialogs(client);
+        await searchOrListChannel(dialogs);
+        const newSelection = getLastSelection();
+        selectedChannelId = newSelection.channelId;
+      } else {
+        selectedChannelId = lastSelection.channelId;
+        logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
+      }
+    } else {
+      // Нет сохраненного выбора, предлагаем выбрать канал
+      const dialogs = await getAllDialogs(client);
+      await searchOrListChannel(dialogs);
+      const newSelection = getLastSelection();
+      selectedChannelId = newSelection.channelId;
+    }
   } else {
-    logMessage.success(`Selected channel is: ${getDialogName(selectedChannelId)}`);
+    logMessage.success(`Selected channel is: ${await getDialogName(client, selectedChannelId)}`);
     const changeChannel = await booleanInput("Do you want to change channel?", false);
     if (changeChannel) {
       const dialogs = await getAllDialogs(client);
       await searchOrListChannel(dialogs);
-      const lastSelection = getLastSelection();
-      selectedChannelId = lastSelection.channelId;
+      const newSelection = getLastSelection();
+      selectedChannelId = newSelection.channelId;
     }
   }
 
   const filesToDownload = await downloadOptionInput();
+  
+  // Валидация клиента перед передачей
+  if (!client) {
+    logMessage.error('Client is null/undefined - authentication failed');
+    return;
+  }
+  if (typeof client.getMessages !== 'function') {
+    logMessage.error(`Client is not properly initialized - getMessages is ${typeof client.getMessages}`);
+    return;
+  }
+  
   await getMessages(client, selectedChannelId, filesToDownload, { check: checkMode !== "none", deep: checkMode === "deep" });
 };
 
