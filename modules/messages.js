@@ -24,7 +24,7 @@ const paths = require("../utils/paths");
 const { MessageService } = require("../services/MessageService");
 const { DownloadManager } = require("../services/DownloadManager");
 const { createFloodState } = require("../services/FloodControl");
-const { ProgressLogger } = require("../services/ProgressLogger");
+const { ProgressLogger, PROGRESS_LOG_INTERVAL_SECONDS } = require("../services/ProgressLogger");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
 // Флаг для будущих текстовых фильтров. Сейчас они отключены,
