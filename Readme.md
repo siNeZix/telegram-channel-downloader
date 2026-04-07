@@ -1,114 +1,403 @@
 # Telegram Channel Downloader
 
-Telegram Channel Downloader is a Node.js application that allows you to scrape and download all media files and messages (in HTML and JSON format) from Telegram channels, groups, or users. This tool simplifies the process of archiving content from Telegram for offline viewing or storage.
+Telegram Channel Downloader is a Node.js CLI application for archiving Telegram channels, groups, and users. It authenticates through the Telegram API, downloads message history and media files, stores message data in SQLite, exports JSON Lines files, creates HTML output, and can validate exported media with FFmpeg.
 
-## Features
+## What the project does
 
-*   **Full Download**: Download all media files and messages from a channel.
-*   **Real-time Monitor**: Listen to a channel and automatically download new messages as they appear.
-*   **Download by IDs**: Download specific messages by their IDs.
-*   **File Validation**: Validate downloaded files using FFmpeg.
-*   **JSON Lines Format**: Optimized message export for high performance and low memory usage.
+The project currently supports these workflows:
 
-## Prerequisites
+- Interactive Telegram authentication with saved session reuse.
+- Full history download for a selected dialog.
+- Real-time monitoring of new messages in a selected dialog.
+- Downloading media from specific message IDs.
+- SQLite-backed message storage per channel.
+- Export of raw and processed messages into JSON Lines files.
+- Snapshot creation for already downloaded files.
+- FFmpeg-based validation of exported media files.
+- Cache validation mode that checks exported files against the SQLite download state.
 
-Before you begin, ensure you have the following installed on your system:
-*   **Node.js** (v12 or higher recommended)
-*   **npm** or **yarn**
+## Main features
 
-## Setup
+### Interactive CLI menu
+Running the main application opens an interactive menu with these actions:
 
-1.  **Create a Telegram App**: Go to [https://my.telegram.org/apps](https://my.telegram.org/apps) and create a new application.
-2.  **Get API Credentials**: After creating the app, copy the API ID and API Hash provided by Telegram.
-3.  **Configure `config.json`**:
-    In the root directory of the application, create a file named `config.json` and paste the following code:
-    ```json
-    {
-        "apiId": "YOUR_API_ID",
-        "apiHash": "YOUR_API_HASH",
-        "sessionId": ""
-    }
-    ```
+- `Full Download (All messages with media)`
+- `Real-time Monitor (Listen for new messages)`
+- `Download by IDs (Specific message IDs)`
+- `Run File Validators`
+- `Exit`
 
-## Usage
+### Authentication and session reuse
+On the first run, the app asks for Telegram credentials and login confirmation data. The session string is then saved into `config.json` and reused on later runs so you do not need to log in every time.
 
-1.  **Install Dependencies**:
-    ```bash
-    npm install
-    ```
-2.  **Start the Application**:
-    ```bash
-    npm start
-    ```
-3.  **Main Menu**: The application will show a menu with the following options:
-    *   **Full Download**: Download all messages and media from a channel.
-    *   **Real-time Monitor**: Listen for new messages and download their media automatically.
-    *   **Download by IDs**: Download specific messages by entering Channel ID and Message IDs.
-    *   **Run File Validators**: Validate downloaded files.
-    *   **Exit**: Close the application.
-4.  **Login**: If this is your first run, the script will prompt you to enter your phone number and the verification code sent to your Telegram account.
-5.  **Select Dialog**: After logging in, the script will display a list of your recent dialogs. You can search or select the channel, group, or user you want to archive.
-6.  **Wait for Download**: The script will start downloading all available media files and messages. Depending on the size of the content, this process may take some time.
-7.  **Access Downloaded Files**: Once the download is complete, you can find the downloaded media files in the `export/` directory.
+### Full archive download
+The downloader can fetch a full message history for a selected channel/group/user, save message metadata to SQLite, and download supported media into the `export/` folder.
 
-## Available Scripts
+### Real-time listener
+The listener mode subscribes to new Telegram messages and keeps the process alive, downloading new content as it appears.
 
-*   `npm start` - Start the main application with interactive menu.
-*   `npm run dev` - Start the script with Nodemon for auto-reloading on changes.
-*   `npm run save-files` - Re-run the file saving process.
-*   `npm run export-messages` - Re-run the message export process.
-*   `npm run valid` - Run file validators (e.g., FFmpeg validation).
+### Download by message IDs
+You can manually provide a channel ID and one or more message IDs to download media only for specific messages.
 
-## Export Formats
+### Validation and cleanup
+The validator scans the export directory, verifies supported media using FFmpeg/FFprobe, can skip files already covered by snapshots, and can optionally compare files against the SQLite download cache.
 
-The application supports exporting messages in two formats:
+## Project structure
 
-### JSON Lines Format (Recommended)
+```text
+.
+├── index.js
+├── package.json
+├── config.json                # auto-created on first run if missing
+├── export/
+│   ├── last_selection.json
+│   └── <channelId>/
+│       ├── messages.db
+│       ├── raw_message.json
+│       ├── all_message.json
+│       ├── messages.html
+│       ├── image/
+│       ├── video/
+│       ├── audio/
+│       ├── pdf/
+│       ├── sticker/
+│       └── snapshots/
+├── modules/
+├── services/
+├── templates/
+├── utils/
+└── validators/
+```
 
-The exported files use the **JSON Lines** format for optimized performance.
+Notes:
 
-**Format:**
-*   Each batch of messages is written as a separate line
-*   Each line is a valid JSON array of message objects
-*   Lines are separated by the newline character `\n`
+- `messages.db` stores raw and processed messages plus media download state.
+- `raw_message.json` contains raw Telegram message objects in JSON Lines format.
+- `all_message.json` contains processed message objects in JSON Lines format.
+- `last_selection.json` stores the last selected dialog/channel.
+- `snapshots/` stores generated file snapshots used by validation.
 
-**Example:**
+## Requirements
+
+Before using the project, install:
+
+- Node.js (current LTS recommended)
+- npm or yarn
+- FFmpeg and FFprobe in `PATH` if you plan to use validation features
+
+## Installation
+
+```bash
+npm install
+```
+
+or
+
+```bash
+yarn install
+```
+
+## Telegram API setup
+
+1. Create a Telegram application at https://my.telegram.org/apps.
+2. Copy your `apiId` and `apiHash`.
+3. Start the project once. If `config.json` does not exist, it is created automatically with default values.
+4. Fill in `apiId` and `apiHash` in `config.json`.
+
+Example `config.json`:
+
 ```json
-[{"id":1,"message":"text1","date":"2024-01-01"}]
-[{"id":2,"message":"text2","date":"2024-01-02"}]
+{
+  "apiId": 123456,
+  "apiHash": "your_api_hash",
+  "sessionId": null,
+  "download": {
+    "maxParallel": 20,
+    "minParallel": 2,
+    "baseRpcDelaySeconds": 0.05,
+    "messageLimit": 200,
+    "fastForwardMessageLimit": 1000,
+    "checkProgressIntervalFiles": 100
+  },
+  "logging": {
+    "progressLogIntervalSeconds": 5
+  }
+}
 ```
 
-**Advantages:**
-*   Write speed < 1 second (instead of 2-4 minutes)
-*   Minimal memory usage
-*   Independent of file size
+Configuration notes:
 
-**Reading Files:**
+- `sessionId` is written automatically after a successful first login.
+- The configuration loader merges your file with internal defaults.
+- The app watches `config.json`, so updated values can be reloaded automatically while the process is running.
 
-To read JSON Lines files, use the `readJSONLinesFile()` utility function:
+## Running the application
 
-```javascript
-const { readJSONLinesFile } = require('./utils/helper');
+Start the interactive CLI:
 
-const messages = readJSONLinesFile('path/to/raw_message.json');
-console.log(`Total messages: ${messages.length}`);
+```bash
+npm start
 ```
 
-### HTML Format
+Development mode with auto-restart:
 
-The application also generates an HTML file (`messages.html`) for easy viewing of the exported content in a web browser.
+```bash
+npm run dev
+```
 
-## Session Handling
+### First login flow
 
-The `sessionId` field in the `config.json` file will be automatically updated after logging in for the first time. This session ID is used for subsequent logins to avoid re-entering your credentials.
+On the first run, the application will:
 
-## Media Types
+1. Ask where to receive the OTP code (`Telegram app` or `SMS`).
+2. Ask for your phone number.
+3. Ask for the Telegram login code.
+4. Ask for 2FA password if your account uses it.
+5. Save the resulting `sessionId` into `config.json`.
 
-The Telegram Channel Downloader supports downloading various types of media files, including images, videos, audio files, documents, and other attachments.
+On later runs, the saved session is reused automatically.
 
-## Contributing
+## Main usage scenarios
 
-Contributions are welcome! If you have any suggestions, bug reports, or feature requests, please open an issue or submit a pull request on GitHub.
+### 1. Full download
+Use this to archive an entire dialog.
+
+Flow:
+
+1. Start the app with `npm start`.
+2. Select `Full Download`.
+3. Reuse the last selected channel or pick another one.
+4. Choose which file types should be downloaded.
+5. Wait until message history and media are processed.
+
+The downloader can optionally work with additional checks:
+
+```bash
+node index.js --check
+```
+
+```bash
+node index.js --deep-check
+```
+
+- `--check` enables fast checking during the download flow.
+- `--deep-check` enables deeper checking during the download flow.
+
+### 2. Real-time monitor
+Use this mode to keep watching a dialog for new messages.
+
+Flow:
+
+1. Start the app with `npm start`.
+2. Select `Real-time Monitor`.
+3. Reuse the last selected channel or pick another one.
+4. Leave the process running.
+
+Stop the listener with `Ctrl+C`.
+
+### 3. Download by IDs
+Use this mode when you already know the Telegram channel ID and the message IDs you need.
+
+Flow:
+
+1. Start the app with `npm start`.
+2. Select `Download by IDs`.
+3. Enter the channel ID.
+4. Enter comma-separated message IDs.
+
+## Available npm scripts
+
+### `npm start`
+Runs the main interactive CLI from `index.js`.
+
+### `npm run dev`
+Runs the same CLI with Nodemon.
+
+### `npm run valid`
+Runs the standalone validator CLI from `validators/index.js`.
+
+### `npm run save-files`
+Scans every exported channel and creates snapshot files in each channel `snapshots/` folder.
+
+### `npm run export-messages`
+Reads every channel SQLite database and regenerates:
+
+- `raw_message.json`
+- `all_message.json`
+
+## Export data layout
+
+All exported data is stored under `export/`.
+
+### Per-channel folder
+Each downloaded channel gets its own folder:
+
+```text
+export/
+└── <channelId>/
+    ├── messages.db
+    ├── raw_message.json
+    ├── all_message.json
+    ├── messages.html
+    ├── image/
+    ├── video/
+    ├── audio/
+    ├── pdf/
+    ├── sticker/
+    └── snapshots/
+```
+
+### SQLite storage
+The project stores message data in `messages.db` for each channel. The database keeps:
+
+- Telegram message ID
+- message date
+- raw JSON payload
+- processed JSON payload
+- `downloaded` status for media cache tracking
+
+This database is later used by:
+
+- export regeneration
+- cache-aware validation
+- media download state tracking
+
+## Message export format
+
+The current export files are written in JSON Lines format.
+
+### `raw_message.json`
+Contains one raw Telegram message JSON object per line.
+
+Example:
+
+```json
+{"id":1,"message":"Hello","date":"2024-01-01T00:00:00.000Z"}
+{"id":2,"message":"World","date":"2024-01-02T00:00:00.000Z"}
+```
+
+### `all_message.json`
+Contains one processed message JSON object per line.
+
+This format is useful because:
+
+- files can be appended incrementally
+- memory usage stays low
+- exports can be rebuilt from SQLite later
+
+## Validation
+
+The validator is implemented as a separate CLI in `validators/index.js` and uses FFmpeg/FFprobe.
+
+### Basic validation
+
+```bash
+npm run valid
+```
+
+### Dry run
+Show what would be deleted without actually deleting files:
+
+```bash
+node validators/index.js --dry-run
+```
+
+### Verbose mode
+
+```bash
+node validators/index.js --verbose
+```
+
+### Validate only images
+
+```bash
+node validators/index.js --images
+```
+
+### Validate only videos
+
+```bash
+node validators/index.js --videos
+```
+
+### Deep validation
+
+```bash
+node validators/index.js --deep
+```
+
+### Ignore snapshots
+
+```bash
+node validators/index.js --ignore-snapshots
+```
+
+### Cache mode
+Compare files against the SQLite `downloaded` state:
+
+```bash
+node validators/index.js --cache
+```
+
+### Cache mode with deep recovery
+Try to validate DB-missing files and restore DB state for valid ones:
+
+```bash
+node validators/index.js --cache --deep
+```
+
+### Validate a custom export directory
+
+```bash
+node validators/index.js ./export
+```
+
+Validation behavior summary:
+
+- checks that FFmpeg and FFprobe are available
+- scans the export directory for supported media files
+- skips files already covered by snapshots unless disabled
+- can delete invalid files
+- can compare filesystem state with SQLite cache state
+- can restore DB flags for valid files in cache deep mode
+
+## Snapshots
+
+Snapshots are created with:
+
+```bash
+npm run save-files
+```
+
+What snapshots are used for:
+
+- recording existing exported files per channel
+- skipping already known-good files during later validation runs
+- reducing repeated validation work
+
+Each snapshot is written as a timestamped JSON file inside:
+
+```text
+export/<channelId>/snapshots/
+```
+
+## Re-exporting messages from SQLite
+
+If JSON export files are missing, outdated, or need to be rebuilt from the database, run:
+
+```bash
+npm run export-messages
+```
+
+This scans channel folders in `export/`, opens each `messages.db`, and recreates JSON Lines exports.
+
+## Notes and operational details
+
+- The app stores the last selected dialog in `export/last_selection.json`.
+- Validation features require FFmpeg binaries available from the command line.
+- The project uses `better-sqlite3` for per-channel message storage.
+- The interactive menu and most prompts are CLI-based and intended for local use.
+- `config.json`, `export/`, and validator output are ignored by Nodemon to avoid unnecessary restarts.
 
 ## License
 
