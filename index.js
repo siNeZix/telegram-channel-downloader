@@ -1,8 +1,33 @@
 const fs = require("fs");
 const path = require("path");
+const paths = require("./utils/paths");
 
 // Check if running validator mode
 const args = process.argv.slice(2);
+
+const takeOptionValue = (optionName) => {
+  const optionIndex = args.indexOf(optionName);
+  if (optionIndex === -1) {
+    return undefined;
+  }
+
+  const optionValue = args[optionIndex + 1];
+  args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
+  return optionValue;
+};
+
+const runtimeOptions = {
+  root: takeOptionValue("--root"),
+  exportDir: takeOptionValue("--export-dir"),
+  configFile: takeOptionValue("--config-file"),
+  logsDir: takeOptionValue("--logs-dir"),
+};
+
+paths.configure(runtimeOptions);
+
+const appPaths = {
+  exportPath: paths.export,
+};
 
 // Parse --check and --deep-check flags (used during normal download to validate existing files)
 const checkIndex = args.indexOf("--check");
@@ -89,13 +114,13 @@ const runFullDownload = async (client, chId) => {
     // Проверяем, есть ли сохраненный выбор канала
     const lastSelection = getLastSelection();
     if (lastSelection.channelId) {
-      const lastChannelName = await getDialogName(client, lastSelection.channelId);
+      const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
       logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
       const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
       
       if (!useLastChannel) {
         // Пользователь хочет выбрать другой канал
-        const dialogs = await getAllDialogs(client);
+        const dialogs = await getAllDialogs(client, true, appPaths);
         await searchOrListChannel(dialogs);
         const newSelection = getLastSelection();
         selectedChannelId = newSelection.channelId;
@@ -105,16 +130,16 @@ const runFullDownload = async (client, chId) => {
       }
     } else {
       // Нет сохраненного выбора, предлагаем выбрать канал
-      const dialogs = await getAllDialogs(client);
+      const dialogs = await getAllDialogs(client, true, appPaths);
       await searchOrListChannel(dialogs);
       const newSelection = getLastSelection();
       selectedChannelId = newSelection.channelId;
     }
   } else {
-    logMessage.success(`Selected channel is: ${await getDialogName(client, selectedChannelId)}`);
+    logMessage.success(`Selected channel is: ${await getDialogName(client, selectedChannelId, appPaths)}`);
     const changeChannel = await booleanInput("Do you want to change channel?", false);
     if (changeChannel) {
-      const dialogs = await getAllDialogs(client);
+      const dialogs = await getAllDialogs(client, true, appPaths);
       await searchOrListChannel(dialogs);
       const newSelection = getLastSelection();
       selectedChannelId = newSelection.channelId;
@@ -133,7 +158,7 @@ const runFullDownload = async (client, chId) => {
     return;
   }
   
-  await getMessages(client, selectedChannelId, filesToDownload, { check: checkMode !== "none", deep: checkMode === "deep" });
+  await getMessages(client, selectedChannelId, filesToDownload, { ...appPaths, check: checkMode !== "none", deep: checkMode === "deep" });
 };
 
 // --- Download by IDs ---
@@ -153,7 +178,7 @@ const runDownloadByIds = async (client) => {
     return;
   }
 
-  await downloadMessagesByIds(client, channelIdNum, messageIds);
+  await downloadMessagesByIds(client, channelIdNum, messageIds, appPaths);
 };
 
 // Main Entry Point
@@ -170,7 +195,7 @@ const runDownloadByIds = async (client) => {
         break;
 
       case "listen":
-        await startChannelListener(client, null);
+        await startChannelListener(client, null, appPaths);
         // Keep the process running for listening mode
         logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
         await new Promise(() => {}); // Infinite wait

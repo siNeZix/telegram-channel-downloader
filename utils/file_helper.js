@@ -1,12 +1,20 @@
 const fs = require('fs');
+const path = require('path');
 const { logMessage } = require('./helper');
 const paths = require('./paths');
 
-const configFile = paths.config;
-const lastSelectionFile = paths.lastSelection;
+const getConfigFile = () => paths.config;
+const getLastSelectionFile = () => paths.lastSelection;
+
+const ensureParentDir = (filePath) => {
+    const dirPath = path.dirname(filePath);
+    paths.ensureDir(dirPath);
+};
 
 const updateCredentials = (obj) => {
     try {
+        const configFile = getConfigFile();
+        ensureParentDir(configFile);
         let data = fs.readFileSync(configFile);
         let credentials = JSON.parse(data);
         credentials = { ...credentials, ...obj };
@@ -20,6 +28,7 @@ const updateCredentials = (obj) => {
 
 const getCredentials = () => {
     try {
+        const configFile = getConfigFile();
         const data = fs.readFileSync(configFile);
         const credentials = JSON.parse(data);
         return credentials;
@@ -33,6 +42,7 @@ const getCredentials = () => {
 
 const getLastSelection = () => {
     try {
+        const lastSelectionFile = getLastSelectionFile();
         const data = fs.readFileSync(lastSelectionFile);
         const last = JSON.parse(data);
         return last;
@@ -44,6 +54,8 @@ const getLastSelection = () => {
 
 const updateLastSelection = (object) => {
     try {
+        const lastSelectionFile = getLastSelectionFile();
+        ensureParentDir(lastSelectionFile);
         let last = getLastSelection();
         last = {
             ...last,

@@ -27,12 +27,15 @@ const DEFAULTS = {
  */
 class ConfigManager {
     constructor() {
-        this.configPath = pathsManager.config;
         this.config = this._deepClone(DEFAULTS);
         this.watchTimeout = null;
         this.listeners = [];
         this._load();
         this._watch();
+    }
+
+    get configPath() {
+        return pathsManager.config;
     }
 
     /**

@@ -5,6 +5,7 @@ const config = require("../utils/config");
 const {
     getMediaType,
     getMediaPath,
+    getMediaRelativePath,
     buildFileName,
     filterString,
     logMessage,
@@ -34,7 +35,8 @@ class MessageService {
     async fetchMessages(channelId, options = {}, onBatch = null) {
         const { 
             check: enableCheck = false, 
-            deep: deepValidation = false 
+            deep: deepValidation = false,
+            outputFolder = paths.getChannelExportPath(channelId),
         } = options;
 
         // Initialize FFmpeg for validation if needed
@@ -53,7 +55,6 @@ class MessageService {
             }
         }
 
-        const outputFolder = paths.getChannelExportPath(channelId);
         paths.ensureDir(outputFolder);
 
         // Инициализация БД
@@ -174,7 +175,7 @@ class MessageService {
             const mediaPath = getMediaPath(message, outputFolder);
             const fileName = path.basename(mediaPath);
             obj.mediaType = message.media ? getMediaType(message) : null;
-            obj.mediaPath = getMediaPath(message, outputFolder);
+            obj.mediaPath = getMediaRelativePath(message);
             obj.mediaName = fileName;
             obj.isMedia = true;
         }
@@ -186,7 +187,7 @@ class MessageService {
      * Получить детали сообщений по ID
      */
     async getMessagesByIds(channelId, messageIds, options = {}) {
-        const outputFolder = paths.getChannelExportPath(channelId);
+        const { outputFolder = paths.getChannelExportPath(channelId) } = options;
         paths.ensureDir(outputFolder);
         
         db.initDatabase(channelId, outputFolder);

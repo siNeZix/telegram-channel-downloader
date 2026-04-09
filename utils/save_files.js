@@ -2,27 +2,27 @@ const fs = require("fs");
 const path = require("path");
 const { scanDirectory, IGNORED_DIRS } = require("../validators/file_scanner");
 const { logMessage } = require("./helper");
+const paths = require("./paths");
 
-const EXPORT_DIR = path.join(__dirname, "..", "export");
 const SNAPSHOTS_DIR = "snapshots";
 
 /**
  * Scan all channels in export directory and create snapshots
  */
-function createSnapshots() {
+function createSnapshots(exportDir = paths.export) {
     logMessage.info("Starting files snapshot creation...");
 
-    if (!fs.existsSync(EXPORT_DIR)) {
-        logMessage.error(`Export directory not found: ${EXPORT_DIR}`);
+    if (!fs.existsSync(exportDir)) {
+        logMessage.error(`Export directory not found: ${exportDir}`);
         process.exit(1);
     }
 
-    const entries = fs.readdirSync(EXPORT_DIR, { withFileTypes: true });
+    const entries = fs.readdirSync(exportDir, { withFileTypes: true });
     let totalChannels = 0;
     let totalFiles = 0;
 
     for (const entry of entries) {
-        const channelPath = path.join(EXPORT_DIR, entry.name);
+        const channelPath = path.join(exportDir, entry.name);
 
         if (!entry.isDirectory()) {
             continue;
@@ -114,7 +114,29 @@ function createChannelSnapshot(channelName, channelPath) {
 
 // Run if executed directly
 if (require.main === module) {
-    createSnapshots();
+    const args = process.argv.slice(2);
+    const takeOptionValue = (optionName) => {
+        const optionIndex = args.indexOf(optionName);
+        if (optionIndex === -1) {
+            return undefined;
+        }
+
+        const optionValue = args[optionIndex + 1];
+        args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
+        return optionValue;
+    };
+
+    paths.configure({
+        root: takeOptionValue("--root"),
+        exportDir: takeOptionValue("--export-dir"),
+        configFile: takeOptionValue("--config-file"),
+        logsDir: takeOptionValue("--logs-dir"),
+    });
+
+    const exportDirArg = args[0]
+        ? path.resolve(args[0])
+        : paths.export;
+    createSnapshots(exportDirArg);
 }
 
 module.exports = { createSnapshots };

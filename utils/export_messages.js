@@ -1,20 +1,46 @@
 const path = require("path");
 const fs = require("fs");
 const { exportToJsonFiles, closeAllConnections } = require("./db");
+const paths = require("./paths");
 
-const EXPORT_DIR = path.join(__dirname, "..", "export");
+const getExportDir = () => process.argv[2]
+	? path.resolve(process.argv[2])
+	: paths.export;
+
+if (require.main === module) {
+	const args = process.argv.slice(2);
+	const takeOptionValue = (optionName) => {
+		const optionIndex = args.indexOf(optionName);
+		if (optionIndex === -1) {
+			return undefined;
+		}
+
+		const optionValue = args[optionIndex + 1];
+		args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
+		return optionValue;
+	};
+
+	paths.configure({
+		root: takeOptionValue("--root"),
+		exportDir: takeOptionValue("--export-dir"),
+		configFile: takeOptionValue("--config-file"),
+		logsDir: takeOptionValue("--logs-dir"),
+	});
+	process.argv = [process.argv[0], process.argv[1], ...args];
+}
 
 /**
  * Получает список всех каналов в директории экспорта
  * @returns {Array<string>} Массив названий каналов
  */
 const getChannelList = () => {
-	if (!fs.existsSync(EXPORT_DIR)) {
-		console.error(`Export directory not found: ${EXPORT_DIR}`);
+	const exportDir = getExportDir();
+	if (!fs.existsSync(exportDir)) {
+		console.error(`Export directory not found: ${exportDir}`);
 		return [];
 	}
 
-	const entries = fs.readdirSync(EXPORT_DIR, { withFileTypes: true });
+	const entries = fs.readdirSync(exportDir, { withFileTypes: true });
 	return entries
 		.filter(entry => entry.isDirectory())
 		.map(entry => entry.name);
@@ -26,7 +52,8 @@ const getChannelList = () => {
  * @returns {boolean} Успешно ли завершился экспорт
  */
 const exportChannel = (channelId) => {
-	const channelPath = path.join(EXPORT_DIR, channelId);
+	const exportDir = getExportDir();
+	const channelPath = path.join(exportDir, channelId);
 	const dbPath = path.join(channelPath, "messages.db");
 
 	// Проверяем существование БД
@@ -51,7 +78,9 @@ const exportChannel = (channelId) => {
  * Основная функция экспорта
  */
 const main = async () => {
+	const exportDir = getExportDir();
 	console.log("Starting messages export to JSON files...\n");
+	console.log(`Using export directory: ${exportDir}`);
 
 	const channels = getChannelList();
 
@@ -83,4 +112,10 @@ const main = async () => {
 };
 
 // Запускаем экспорт
-main();
+if (require.main === module) {
+	main();
+}
+
+module.exports = {
+	main,
+};

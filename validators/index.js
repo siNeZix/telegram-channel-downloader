@@ -541,6 +541,25 @@ function escapePathForCmd(filePath) {
  */
 function parseArgs() {
     const args = process.argv.slice(2);
+    const takeOptionValue = (optionName) => {
+        const optionIndex = args.indexOf(optionName);
+        if (optionIndex === -1) {
+            return undefined;
+        }
+
+        const optionValue = args[optionIndex + 1];
+        args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
+        return optionValue;
+    };
+
+    const runtimeOptions = {
+        root: takeOptionValue("--root"),
+        exportDir: takeOptionValue("--export-dir"),
+        configFile: takeOptionValue("--config-file"),
+        logsDir: takeOptionValue("--logs-dir"),
+    };
+
+    paths.configure(runtimeOptions);
     const options = {
         dryRun: false,
         verbose: false,
@@ -568,7 +587,7 @@ function parseArgs() {
             options.cache = true;
         } else if (!arg.startsWith("-")) {
             // Positional argument - treat as export path
-            options.exportPath = path.isAbsolute(arg) ? arg : path.resolve(arg);
+            options.exportPath = path.isAbsolute(arg) ? arg : path.resolve(paths.root, arg);
         }
     }
 

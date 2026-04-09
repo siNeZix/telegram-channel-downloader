@@ -283,17 +283,24 @@ const addFileToCheckCache = (filePath, size) => {
 	fileCheckCache.set(filePath, { exists: true, size });
 };
 
+const getMediaRelativePath = (message) => {
+	if (!message || !message.media) return null;
+
+	const fileName = buildFileName(message);
+	const folderType = filterString(getMediaType(message));
+	return path.join(folderType, fileName);
+};
+
 // Get the path to save the media file
 const getMediaPath = (message, outputFolder) => {
 	if (!message) return;
 
 	if (message.media) {
-		const fileName = buildFileName(message);
-		const folderType = filterString(getMediaType(message));
-		outputFolder = path.join(outputFolder, folderType);
-		const filePath = path.join(outputFolder, fileName);
-		if (!fs.existsSync(outputFolder)) {
-			fs.mkdirSync(outputFolder);
+		const relativePath = getMediaRelativePath(message);
+		const filePath = path.join(outputFolder, relativePath);
+		const mediaDir = path.dirname(filePath);
+		if (!fs.existsSync(mediaDir)) {
+			fs.mkdirSync(mediaDir, { recursive: true });
 		}
 
 		return filePath;
@@ -411,6 +418,7 @@ module.exports = {
 	getMediaType,
 	checkFileExist,
 	getMediaPath,
+	getMediaRelativePath,
 	getDialogType,
 	logMessage,
 	wait,

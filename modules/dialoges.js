@@ -6,14 +6,24 @@ const { logMessage, getDialogType, circularStringify } = require("../utils/helpe
 const { numberInput, textInput, booleanInput } = require('../utils/input_helper');
 const paths = require('../utils/paths');
 
+const resolveDialogPaths = (exportPath = paths.export) => ({
+    exportPath,
+    dialogListPath: paths.getDialogListPath(exportPath),
+    rawDialogListPath: paths.getRawDialogListPath(exportPath),
+    dialogListHtmlPath: paths.getDialogListHtmlPath(exportPath),
+    channelTemplateFile: paths.getTemplatePath('channels.ejs'),
+});
+
 /**
  * Fetches all dialogs from the client, sorts them by name, and exports them to JSON and HTML files.
  * @param {Object} client - The client object to fetch dialogs from.
  * @param {boolean} [sortByName=true] - Whether to sort the dialogs by name.
  * @returns {Promise<Array>} - A promise that resolves to the list of dialogs.
  */
-const getAllDialogs = async (client, sortByName = true) => {
+const getAllDialogs = async (client, sortByName = true, options = {}) => {
     try {
+        const { exportPath = paths.export } = options;
+        const dialogPaths = resolveDialogPaths(exportPath);
         logMessage.dialog(`Fetching all dialogs, sortByName=${sortByName}`);
         const dialogs = await client.getDialogs();
         logMessage.dialog(`getDialogs returned ${dialogs.length} dialogs`);
@@ -40,18 +50,17 @@ const getAllDialogs = async (client, sortByName = true) => {
             logMessage.dialog(`Sorted ${dialogList.length} dialogs by name in ${Date.now() - startSort}ms`);
         }
 
-        const channelTemplateFile = path.resolve(__dirname, '../templates/channels.ejs');
-        logMessage.dialog(`Rendering HTML template: ${channelTemplateFile}`);
-        const renderedHtml = await ejs.renderFile(channelTemplateFile, { channels: dialogList });
+        logMessage.dialog(`Rendering HTML template: ${dialogPaths.channelTemplateFile}`);
+        const renderedHtml = await ejs.renderFile(dialogPaths.channelTemplateFile, { channels: dialogList });
 
         // Ensure export directory exists
-        logMessage.dialog(`Ensuring export directory exists: ${paths.export}`);
-        paths.ensureDir(paths.export);
+        logMessage.dialog(`Ensuring export directory exists: ${dialogPaths.exportPath}`);
+        paths.ensureDir(dialogPaths.exportPath);
 
         logMessage.dialog(`Writing dialog data to files`);
-        fs.writeFileSync(path.join(paths.export, "raw_dialog_list.json"), circularStringify(dialogs, null, 2));
-        fs.writeFileSync(path.join(paths.export, "dialog_list.html"), renderedHtml);
-        fs.writeFileSync(paths.getDialogListPath(), JSON.stringify(dialogList, null, 2));
+        fs.writeFileSync(dialogPaths.rawDialogListPath, circularStringify(dialogs, null, 2));
+        fs.writeFileSync(dialogPaths.dialogListHtmlPath, renderedHtml);
+        fs.writeFileSync(dialogPaths.dialogListPath, JSON.stringify(dialogList, null, 2));
         logMessage.dialog(`Dialog data written successfully`);
 
         // Summary of dialog types
@@ -183,14 +192,15 @@ const searchThroughDialogsWithSearchString = (dialogs, searchString) => {
  * @param {number} channelId - The ID of the channel.
  * @returns {string|null} - The name of the dialog, or null if not found.
  */
-const getDialogName = async (client, channelId) => {
+const getDialogName = async (client, channelId, options = {}) => {
     try {
-        const dialogListPath = paths.getDialogListPath();
+        const { exportPath = paths.export } = options;
+        const dialogListPath = paths.getDialogListPath(exportPath);
         logMessage.dialog(`getDialogName: looking for channelId=${channelId}, path=${dialogListPath}`);
         
         if (!fs.existsSync(dialogListPath)) {
             logMessage.dialog(`Dialog list not found at ${dialogListPath}, fetching from API`);
-            await getAllDialogs(client);
+            await getAllDialogs(client, true, { exportPath });
             logMessage.dialog(`Dialog list fetched, exiting to reload`);
             process.exit(0);
         }

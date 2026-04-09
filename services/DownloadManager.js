@@ -442,10 +442,10 @@ class DownloadManager {
 /**
  * Скачать сообщения по ID
  */
-const downloadMessagesByIds = async (client, channelId, messageIds, downloadableFiles = {}) => {
+const downloadMessagesByIds = async (client, channelId, messageIds, downloadableFiles = {}, options = {}) => {
     try {
         logMessage.dl(`[DL] downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)}`);
-        const outputFolder = paths.getChannelExportPath(channelId);
+        const outputFolder = options.outputFolder || paths.getChannelExportPath(channelId);
         paths.ensureDir(outputFolder);
         
         db.initDatabase(channelId, outputFolder);

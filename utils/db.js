@@ -1,11 +1,11 @@
 const Database = require("better-sqlite3");
 const fs = require("fs");
 const path = require("path");
-const paths = require("./paths");
 
 // Ленивая загрузка helper.js для разрыва циклической зависимости
 // (helper.js требует db.js, а db.js требует logMessage из helper.js)
 let _logMessage = null;
+let _filterString = null;
 const logMessage = () => {
 	if (!_logMessage) {
 		_logMessage = require("./helper").logMessage;
@@ -13,8 +13,114 @@ const logMessage = () => {
 	return _logMessage;
 };
 
+const filterString = (value) => {
+	if (!_filterString) {
+		_filterString = require("./helper").filterString;
+	}
+	return _filterString(value);
+};
+
 // Структура для хранения открытых соединений с БД для каждого канала
 const dbConnections = new Map();
+
+const getDbPath = (outputFolder) => path.join(outputFolder, "messages.db");
+const getRawMessagesPath = (outputFolder) => path.join(outputFolder, "raw_message.json");
+const getProcessedMessagesPath = (outputFolder) => path.join(outputFolder, "all_message.json");
+
+const normalizeStoredMediaPath = (mediaPath, outputFolder) => {
+	if (!mediaPath || typeof mediaPath !== "string") {
+		return null;
+	}
+
+	if (!path.isAbsolute(mediaPath)) {
+		return mediaPath.replace(/[\\/]+/g, path.sep);
+	}
+
+	if (!outputFolder) {
+		return mediaPath;
+	}
+
+	const relativePath = path.relative(outputFolder, mediaPath);
+	if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+		return mediaPath;
+	}
+
+	return relativePath;
+};
+
+const getStoredMediaPathVariants = (mediaPath, outputFolder) => {
+	const variants = new Set();
+	const normalizedPath = normalizeStoredMediaPath(mediaPath, outputFolder);
+
+	if (normalizedPath) {
+		variants.add(normalizedPath);
+		variants.add(normalizedPath.replace(/\\/g, "/"));
+		variants.add(normalizedPath.replace(/\//g, "\\"));
+	}
+
+	if (mediaPath && typeof mediaPath === "string" && path.isAbsolute(mediaPath)) {
+		variants.add(mediaPath);
+	}
+
+	return variants;
+};
+
+const buildStoredMediaPathFromPayload = (processedData) => {
+	if (!processedData || !processedData.mediaName || !processedData.mediaType) {
+		return null;
+	}
+
+	return path.join(filterString(processedData.mediaType), processedData.mediaName);
+};
+
+const normalizeProcessedMessage = (processedData, outputFolder) => {
+	if (!processedData || typeof processedData !== "object") {
+		return { processedData, changed: false };
+	}
+
+	const fallbackRelativePath = buildStoredMediaPathFromPayload(processedData);
+	const normalizedMediaPath = normalizeStoredMediaPath(processedData.mediaPath, outputFolder) || fallbackRelativePath;
+
+	if (!normalizedMediaPath || normalizedMediaPath === processedData.mediaPath) {
+		return { processedData, changed: false };
+	}
+
+	return {
+		processedData: {
+			...processedData,
+			mediaPath: normalizedMediaPath,
+		},
+		changed: true,
+	};
+};
+
+const migrateStoredMediaPaths = (db, outputFolder) => {
+	let migratedCount = 0;
+	const selectRows = db.prepare("SELECT id, processed_json FROM messages WHERE processed_json IS NOT NULL");
+	const updateRow = db.prepare("UPDATE messages SET processed_json = ? WHERE id = ?");
+
+	const migrate = db.transaction(() => {
+		for (const row of selectRows.iterate()) {
+			try {
+				const processedData = JSON.parse(row.processed_json);
+				const normalized = normalizeProcessedMessage(processedData, outputFolder);
+				if (!normalized.changed) {
+					continue;
+				}
+
+				updateRow.run(JSON.stringify(normalized.processedData), row.id);
+				migratedCount++;
+			} catch (e) {
+				// Пропускаем записи с битым JSON, не мешая запуску приложения.
+			}
+		}
+	});
+
+	migrate();
+	if (migratedCount > 0) {
+		logMessage().db(`[DB] Migrated ${migratedCount} stored media paths to relative format`);
+	}
+};
 
 /**
  * Инициализирует базу данных SQLite для указанного канала
@@ -23,7 +129,7 @@ const dbConnections = new Map();
  * @returns {Database.Database} Объект базы данных
  */
 const initDatabase = (channelId, outputFolder) => {
-	const dbPath = paths.getChannelDbPath(channelId);
+	const dbPath = getDbPath(outputFolder);
 	
 	logMessage().db(`[DB] initDatabase: channelId=${channelId}, dbPath=${dbPath}`);
 	
@@ -81,6 +187,8 @@ const initDatabase = (channelId, outputFolder) => {
 	db.exec(`
 		CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)
 	`);
+
+	migrateStoredMediaPaths(db, outputFolder);
 	
 	// Сохраняем соединение в кэш
 	dbConnections.set(dbPath, db);
@@ -96,7 +204,7 @@ const initDatabase = (channelId, outputFolder) => {
  * @returns {Database.Database|null} Объект базы данных или null
  */
 const getDatabase = (channelId, outputFolder) => {
-	const dbPath = paths.getChannelDbPath(channelId);
+	const dbPath = getDbPath(outputFolder);
 	const db = dbConnections.get(dbPath) || null;
 	logMessage().db(`[DB] getDatabase: channelId=${channelId}, found=${!!db}, path=${dbPath}`);
 	return db;
@@ -246,8 +354,8 @@ function* getMessagesForExport(channelId, outputFolder, type = "all") {
  * @param {string} outputFolder - Путь к папке экспорта
  */
 const exportToJsonFiles = (channelId, outputFolder) => {
-	const rawFilePath = paths.getRawMessagesPath(channelId);
-	const processedFilePath = paths.getProcessedMessagesPath(channelId);
+	const rawFilePath = getRawMessagesPath(outputFolder);
+	const processedFilePath = getProcessedMessagesPath(outputFolder);
 	
 	logMessage().db(`[DB] exportToJsonFiles: channelId=${channelId}`);
 	
@@ -306,9 +414,8 @@ const closeAllConnections = () => {
  * @param {string} outputFolder - Путь к папке экспорта
  */
 const closeDatabase = (outputFolder) => {
-	// Extract channelId from outputFolder path (last segment)
 	const channelId = path.basename(outputFolder);
-	const dbPath = paths.getChannelDbPath(channelId);
+	const dbPath = getDbPath(outputFolder);
 	
 	logMessage().db(`[DB] closeDatabase: channelId=${channelId}, path=${outputFolder}`);
 	
@@ -401,8 +508,14 @@ const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => 
 		for (const row of db.prepare("SELECT id, processed_json FROM messages WHERE downloaded = 0").iterate()) {
 			processedCount++;
 			try {
-				const processed_data = row.processed_json ? JSON.parse(row.processed_json) : null;
-				if (processed_data && processed_data.mediaPath && snapshotFiles.has(processed_data.mediaPath)) {
+				const processedData = row.processed_json ? JSON.parse(row.processed_json) : null;
+				const normalized = normalizeProcessedMessage(processedData, outputFolder);
+				const mediaPath = normalized.processedData ? normalized.processedData.mediaPath : null;
+				const mediaPathVariants = mediaPath
+					? getStoredMediaPathVariants(mediaPath, outputFolder)
+					: new Set();
+				const foundInSnapshots = [...mediaPathVariants].some((storedPath) => snapshotFiles.has(storedPath));
+				if (foundInSnapshots) {
 					db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?").run(row.id);
 					updatedCount++;
 				}

@@ -7,6 +7,7 @@ const {
 	wait,
 	checkFileExist,
 	getMediaPath,
+	getMediaRelativePath,
 	clearFileCheckCache,
 	addFileToCheckCache,
 	buildFileName,
@@ -33,6 +34,9 @@ const ENABLE_TEXT_FILTERS = false;
 const MAX_RPC_RETRIES = 5;
 const CHECK_PROGRESS_INTERVAL_MS = 5000;
 
+const resolveOutputFolder = (channelId, options = {}) =>
+	options.outputFolder || paths.getChannelExportPath(channelId, options.exportPath);
+
 // Логирование прогресса проверки файлов
 const logCheckProgress = (checked, total, skipped, newFiles, startedAt) => {
 	const percent = total > 0 ? Math.round((checked * 100) / total) : 100;
@@ -43,8 +47,7 @@ const logCheckProgress = (checked, total, skipped, newFiles, startedAt) => {
 	);
 };
 
-// Всегда начинаем с самого начала истории канала.
-const { messageOffsetId: lastKnownOffsetId = 0 } = getLastSelection();
+const getLastKnownOffsetId = () => Number(getLastSelection().messageOffsetId || 0);
 
 const formatEta = (totalSeconds) => {
 	if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
@@ -288,6 +291,7 @@ const downloadMessageMedia = async (client, message, mediaPath, floodState, chan
 
 const getMessages = async (client, channelId, downloadableFiles = {}, options = {}) => {
 	const { check: enableCheck = false, deep: deepValidation = false } = options;
+	const lastKnownOffsetId = getLastKnownOffsetId();
 
 	logMessage.fetch(`=== Starting getMessages: channelId=${channelId}, check=${enableCheck}, deep=${deepValidation} ===`);
 	logMessage.fetch(`Config: messageLimit=${config.get('download.messageLimit')}, fastForwardMessageLimit=${config.get('download.fastForwardMessageLimit')}, lastKnownOffsetId=${lastKnownOffsetId}`);
@@ -320,7 +324,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		// поэтому оборачиваем в отдельный try для возможности закрыть БД в catch
 		let outputFolder;
 		try {
-			outputFolder = paths.getChannelExportPath(channelId);
+			outputFolder = resolveOutputFolder(channelId, options);
 			logMessage.fetch(`Output folder: ${outputFolder}`);
 		} catch (folderErr) {
 			logMessage.error(`[FETCH] Failed to initialize output folder: ${folderErr?.message || String(folderErr)}`);
@@ -449,7 +453,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 					obj.mediaType = message.media
 						? getMediaType(message)
 						: null;
-					obj.mediaPath = getMediaPath(message, outputFolder);
+					obj.mediaPath = getMediaRelativePath(message);
 					obj.mediaName = fileName;
 					obj.isMedia = true;
 				}
@@ -860,9 +864,9 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 		);
 		logMessage.fetch(`getMessagesByIds returned ${result.length} messages for ids=${JSON.stringify(messageIds)}`);
 		
-		let outputFolder = paths.getChannelExportPath(channelId);
+		let outputFolder = resolveOutputFolder(channelId, options);
 		if (!fs.existsSync(outputFolder)) {
-			fs.mkdirSync(outputFolder);
+			fs.mkdirSync(outputFolder, { recursive: true });
 			logMessage.fetch(`Created output folder: ${outputFolder}`);
 		}
 	
@@ -1090,7 +1094,7 @@ const sendMessage = async (client, channelId, message) => {
 
 // --- Listen Channel (Real-time monitoring) ---
 // Обработчик новых сообщений для прослушивания канала
-const handleNewMessage = async (event, client, channelId) => {
+const handleNewMessage = async (event, client, channelId, options = {}) => {
 	const messageChatId =
 		event.message?.peerId?.chatId ||
 		event.message?.peerId?.channelId ||
@@ -1103,9 +1107,9 @@ const handleNewMessage = async (event, client, channelId) => {
 	const isMedia = !!event.message?.media;
 	logMessage.dl(`[LISTEN] New message: msgId=${messageId}, hasMedia=${isMedia}`);
 	if (isMedia) {
-		const outputFolder = paths.getChannelExportPath(channelId);
+		const outputFolder = resolveOutputFolder(channelId, options);
 
-		const details = await getMessageDetail(client, channelId, [messageId]);
+		const details = await getMessageDetail(client, channelId, [messageId], { ...options, outputFolder });
 		for (const msg of details) {
 			await downloadMessageMedia(
 				client,
@@ -1121,7 +1125,7 @@ const handleNewMessage = async (event, client, channelId) => {
 };
 
 // Запуск прослушивания канала в реальном времени
-const startChannelListener = async (client, channelId) => {
+const startChannelListener = async (client, channelId, options = {}) => {
 	const { NewMessage } = require("telegram/events");
 	const { getDialogName, selectDialog, searchDialog, getAllDialogs } = require("./dialoges");
 	const { selectInput, booleanInput } = require("../utils/input_helper");
@@ -1132,7 +1136,7 @@ const startChannelListener = async (client, channelId) => {
 	if (!channelId) {
 		const lastSelection = getLastSelection();
 		if (lastSelection.channelId) {
-			const lastChannelName = await getDialogName(client, lastSelection.channelId);
+			const lastChannelName = await getDialogName(client, lastSelection.channelId, options);
 			logMessage.init(`Found last selection: channelId=${lastSelection.channelId}, name=${lastChannelName}`);
 			logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
 			const useLastChannel = await booleanInput("Do you want to continue listening to this channel?", true);
@@ -1142,10 +1146,10 @@ const startChannelListener = async (client, channelId) => {
 				logMessage.init(`User wants to select new channel`);
 				const wantToSearch = await booleanInput("Do you want to search for a channel?", false);
 				if (wantToSearch) {
-					const dialogs = await getAllDialogs(client);
+					const dialogs = await getAllDialogs(client, true, options);
 					await searchDialog(dialogs);
 				} else {
-					const dialogs = await getAllDialogs(client);
+					const dialogs = await getAllDialogs(client, true, options);
 					await selectDialog(dialogs);
 				}
 				const newSelection = getLastSelection();
@@ -1159,10 +1163,10 @@ const startChannelListener = async (client, channelId) => {
 			logMessage.init(`No last selection found, prompting user to select`);
 			const wantToSearch = await booleanInput("Do you want to search for a channel?", false);
 			if (wantToSearch) {
-				const dialogs = await getAllDialogs(client);
+				const dialogs = await getAllDialogs(client, true, options);
 				await searchDialog(dialogs);
 			} else {
-				const dialogs = await getAllDialogs(client);
+				const dialogs = await getAllDialogs(client, true, options);
 				await selectDialog(dialogs);
 			}
 			const newSelection = getLastSelection();
@@ -1170,22 +1174,22 @@ const startChannelListener = async (client, channelId) => {
 		}
 	}
 
-	const dialogName = await getDialogName(client, channelId);
+	const dialogName = await getDialogName(client, channelId, options);
 	logMessage.success(`[LISTEN] Started listening to: ${dialogName}`);
 	
 	client.addEventHandler(
-		(event) => handleNewMessage(event, client, channelId),
+		(event) => handleNewMessage(event, client, channelId, options),
 		new NewMessage({})
 	);
 };
 
 // --- Download messages by IDs ---
-const downloadMessagesByIds = async (client, channelId, messageIds) => {
+const downloadMessagesByIds = async (client, channelId, messageIds, options = {}) => {
 	try {
 		logMessage.dl(`=== Starting downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)} ===`);
-		const outputFolder = paths.getChannelExportPath(channelId);
+		const outputFolder = resolveOutputFolder(channelId, options);
 
-		const messageArr = await getMessageDetail(client, channelId, messageIds);
+		const messageArr = await getMessageDetail(client, channelId, messageIds, { ...options, outputFolder });
 		for (const message of messageArr) {
 			// Проверяем, есть ли медиа в сообщении
 			if (message.media) {

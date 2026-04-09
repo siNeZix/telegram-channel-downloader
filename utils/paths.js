@@ -1,96 +1,117 @@
-const path = require('path');
+const fs = require("fs");
+const path = require("path");
 
-/**
- * Централизованный менеджер путей проекта
- * Использует абсолютные пути на основе __dirname для надежности
- */
+const ENV_KEYS = {
+	root: "TGDL_RUNTIME_ROOT",
+	export: "TGDL_EXPORT_DIR",
+	config: "TGDL_CONFIG_FILE",
+	logs: "TGDL_LOGS_DIR",
+};
+
+const resolvePath = (value) => path.resolve(value);
+
 class PathsManager {
-    constructor() {
-        // Корень проекта (на один уровень выше utils)
-        this.root = path.resolve(__dirname, '..');
-        this.export = path.join(this.root, 'export');
-        this.config = path.join(this.root, 'config.json');
-        this.lastSelection = path.join(this.export, 'last_selection.json');
-        this.snapshots = 'snapshots';
-        this.logs = path.join(this.root, 'logs');
-    }
+	constructor() {
+		this.snapshots = "snapshots";
+		this.reset();
+	}
 
-    /**
-     * Получить путь к папке экспорта для конкретного канала
-     * @param {string|number} channelId - ID канала
-     * @returns {string}
-     */
-    getChannelExportPath(channelId) {
-        return path.join(this.export, String(channelId));
-    }
+	resolveRootPath(...segments) {
+		return path.join(this.root, ...segments);
+	}
 
-    /**
-     * Получить путь к папке медиа для конкретного канала
-     * @param {string|number} channelId - ID канала
-     * @param {string} mediaType - Тип медиа (image, video, audio и т.д.)
-     * @returns {string}
-     */
-    getMediaPath(channelId, mediaType) {
-        return path.join(this.getChannelExportPath(channelId), mediaType);
-    }
+	configure(options = {}) {
+		const nextRoot = options.root ? resolvePath(options.root) : this.root;
+		this.root = nextRoot;
+		this.export = options.exportDir
+			? resolvePath(options.exportDir)
+			: path.join(this.root, "export");
+		this.config = options.configFile
+			? resolvePath(options.configFile)
+			: path.join(this.root, "config.json");
+		this.logs = options.logsDir
+			? resolvePath(options.logsDir)
+			: path.join(this.root, "logs");
+		this.lastSelection = path.join(this.export, "last_selection.json");
+		this.dialogList = path.join(this.export, "dialog_list.json");
+		this.rawDialogList = path.join(this.export, "raw_dialog_list.json");
+		this.dialogListHtml = path.join(this.export, "dialog_list.html");
+		return this;
+	}
 
-    /**
-     * Получить путь к файлу базы данных канала
-     * @param {string|number} channelId - ID канала
-     * @returns {string}
-     */
-    getChannelDbPath(channelId) {
-        return path.join(this.getChannelExportPath(channelId), 'messages.db');
-    }
+	reset() {
+		const scriptRoot = path.resolve(__dirname, "..");
+		const envRoot = process.env[ENV_KEYS.root];
+		const envExportDir = process.env[ENV_KEYS.export];
+		const envConfigFile = process.env[ENV_KEYS.config];
+		const envLogsDir = process.env[ENV_KEYS.logs];
 
-    /**
-     * Получить путь к папке снапшотов канала
-     * @param {string|number} channelId - ID канала
-     * @returns {string}
-     */
-    getSnapshotsPath(channelId) {
-        return path.join(this.getChannelExportPath(channelId), this.snapshots);
-    }
+		return this.configure({
+			root: envRoot || scriptRoot,
+			exportDir: envExportDir,
+			configFile: envConfigFile,
+			logsDir: envLogsDir,
+		});
+	}
 
-    /**
-     * Получить путь к сырым сообщениям канала
-     * @param {string|number} channelId - ID канала
-     * @returns {string}
-     */
-    getRawMessagesPath(channelId) {
-        return path.join(this.getChannelExportPath(channelId), 'raw_message.json');
-    }
+	getChannelExportPath(channelId, exportRoot = this.export) {
+		return path.join(exportRoot, String(channelId));
+	}
 
-    /**
-     * Получить путь к обработанным сообщениям канала
-     * @param {string|number} channelId - ID канала
-     * @returns {string}
-     */
-    getProcessedMessagesPath(channelId) {
-        return path.join(this.getChannelExportPath(channelId), 'all_message.json');
-    }
+	getMediaPath(channelId, mediaType, exportRoot = this.export) {
+		return path.join(this.getChannelExportPath(channelId, exportRoot), mediaType);
+	}
 
-    /**
-     * Получить путь к списку диалогов
-     * @returns {string}
-     */
-    getDialogListPath() {
-        return path.join(this.export, 'dialog_list.json');
-    }
+	getChannelDbPath(channelId, exportRoot = this.export) {
+		return path.join(this.getChannelExportPath(channelId, exportRoot), "messages.db");
+	}
 
-    /**
-     * Проверить существование пути и создать директорию если нужно
-     * @param {string} dirPath - Путь к директории
-     */
-    ensureDir(dirPath) {
-        const fs = require('fs');
-        if (!fs.existsSync(dirPath)) {
-            fs.mkdirSync(dirPath, { recursive: true });
-        }
-    }
+	getSnapshotsPath(channelId, exportRoot = this.export) {
+		return path.join(this.getChannelExportPath(channelId, exportRoot), this.snapshots);
+	}
+
+	getRawMessagesPath(channelId, exportRoot = this.export) {
+		return path.join(this.getChannelExportPath(channelId, exportRoot), "raw_message.json");
+	}
+
+	getProcessedMessagesPath(channelId, exportRoot = this.export) {
+		return path.join(this.getChannelExportPath(channelId, exportRoot), "all_message.json");
+	}
+
+	getDialogListPath(exportRoot = this.export) {
+		return path.join(exportRoot, "dialog_list.json");
+	}
+
+	getRawDialogListPath(exportRoot = this.export) {
+		return path.join(exportRoot, "raw_dialog_list.json");
+	}
+
+	getDialogListHtmlPath(exportRoot = this.export) {
+		return path.join(exportRoot, "dialog_list.html");
+	}
+
+	getTemplatePath(...segments) {
+		return this.resolveRootPath("templates", ...segments);
+	}
+
+	ensureDir(dirPath) {
+		if (!fs.existsSync(dirPath)) {
+			fs.mkdirSync(dirPath, { recursive: true });
+		}
+	}
+
+	getRuntimeConfig() {
+		return {
+			root: this.root,
+			export: this.export,
+			config: this.config,
+			logs: this.logs,
+			lastSelection: this.lastSelection,
+			dialogList: this.dialogList,
+			rawDialogList: this.rawDialogList,
+			dialogListHtml: this.dialogListHtml,
+		};
+	}
 }
 
-// Создаем синглтон для использования во всем приложении
-const pathsManager = new PathsManager();
-
-module.exports = pathsManager;
+module.exports = new PathsManager();
