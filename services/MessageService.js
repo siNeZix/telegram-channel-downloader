@@ -40,6 +40,7 @@ class MessageService {
             check: enableCheck = false, 
             deep: deepValidation = false,
             outputFolder = paths.getChannelExportPath(channelId),
+            lastKnownOffsetId = 0,
         } = options;
 
         // Initialize FFmpeg for validation if needed
@@ -75,7 +76,7 @@ class MessageService {
         let offsetId = 0;
         let totalFetched = 0;
         let totalMessagesInChannel = 0;
-        let fastForwardMode = offsetId > 0;
+        let fastForwardMode = Number(lastKnownOffsetId) > 0;
         
         // Статистика
         const stats = {
@@ -86,7 +87,9 @@ class MessageService {
         };
 
         while (true) {
-            const inFastForwardRange = fastForwardMode && (offsetId === 0 || offsetId > offsetId);
+            const inFastForwardRange =
+                fastForwardMode &&
+                (offsetId === 0 || offsetId > Number(lastKnownOffsetId));
             const messageLimit = inFastForwardRange
                 ? config.get('download.fastForwardMessageLimit')
                 : config.get('download.messageLimit');
@@ -110,9 +113,11 @@ class MessageService {
             );
 
             totalFetched += messages.length;
+            stats.totalFetched = totalFetched;
 
             if (totalMessagesInChannel === 0 && messages.total > 0) {
                 totalMessagesInChannel = messages.total;
+                stats.totalMessagesInChannel = totalMessagesInChannel;
                 logMessage.info(`Total messages in channel: ${totalMessagesInChannel}`);
             }
 
@@ -153,7 +158,8 @@ class MessageService {
                     ffmpegPaths,
                     deepValidation,
                     floodState: this.floodState,
-                    stats
+                    stats,
+                    nextOffsetId: messages[messages.length - 1]?.id || offsetId,
                 });
             }
 
@@ -296,6 +302,10 @@ class MessageService {
         );
 
         return result;
+    }
+
+    cleanup() {
+        this.floodState.cleanup();
     }
 }
 

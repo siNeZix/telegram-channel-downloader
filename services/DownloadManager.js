@@ -307,6 +307,8 @@ class DownloadManager {
             }
         }
 
+        progressLogger.updateStats({ totalFiles: batchFilesToDownload });
+
         // Debug: Финальный лог статистики времени проверки
         if (checkedFiles > 0) {
             const checkTotalMs = Date.now() - checkStartedAt;
@@ -525,6 +527,9 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
                     } else {
                         failedDownloads++;
                     }
+                })
+                .finally(() => {
+                    activeDownloads.delete(downloadPromise);
                 });
                 
                 activeDownloads.add(downloadPromise);

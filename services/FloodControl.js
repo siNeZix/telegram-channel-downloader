@@ -24,7 +24,7 @@ class FloodControl {
                 }
             }
         };
-        config.addListener(this.configListener);
+        this.removeConfigListener = config.addListener(this.configListener);
         
         logMessage.flood(`[FLOOD] FloodControl created: maxParallel=${config.get('download.maxParallel')}, baseDelay=${config.get('download.baseRpcDelaySeconds')}s`);
     }
@@ -176,6 +176,16 @@ class FloodControl {
         this.consecutiveFloods = 0;
         this.successStreak = 0;
         logMessage.flood(`[FLOOD] State reset: parallelLimit=${oldLimit} -> ${this.currentParallelLimit}`);
+    }
+
+    /**
+     * Освободить ресурсы экземпляра
+     */
+    cleanup() {
+        if (typeof this.removeConfigListener === 'function') {
+            this.removeConfigListener();
+            this.removeConfigListener = null;
+        }
     }
     
     /**

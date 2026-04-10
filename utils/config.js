@@ -29,6 +29,7 @@ class ConfigManager {
     constructor() {
         this.config = this._deepClone(DEFAULTS);
         this.watchTimeout = null;
+        this.suppressWatchUntil = 0;
         this.listeners = [];
         this._load();
         this._watch();
@@ -79,12 +80,13 @@ class ConfigManager {
         try {
             if (fs.existsSync(this.configPath)) {
                 const fileContent = fs.readFileSync(this.configPath, 'utf8');
-                const fileConfig = JSON.parse(fileContent);
-                this.config = this._deepMerge(this._deepClone(DEFAULTS), fileConfig);
+                const trimmedContent = fileContent.trim();
+                const fileConfig = trimmedContent === '' ? {} : JSON.parse(trimmedContent);
+                const mergedConfig = this._deepMerge(this._deepClone(DEFAULTS), fileConfig);
+                this.config = mergedConfig;
                 
                 // Проверяем, нужно ли сохранить новые поля
-                const merged = this._deepMerge(fileConfig, DEFAULTS);
-                const hasNewFields = JSON.stringify(merged) !== JSON.stringify(fileConfig);
+                const hasNewFields = JSON.stringify(mergedConfig) !== JSON.stringify(fileConfig);
                 
                 if (hasNewFields) {
                     this._save();
@@ -110,12 +112,15 @@ class ConfigManager {
             if (!fs.existsSync(dir)) {
                 fs.mkdirSync(dir, { recursive: true });
             }
-            
+
+            this.suppressWatchUntil = Date.now() + 1000;
+            const tempPath = `${this.configPath}.tmp`;
             fs.writeFileSync(
-                this.configPath,
+                tempPath,
                 JSON.stringify(this.config, null, 4),
                 'utf8'
             );
+            fs.renameSync(tempPath, this.configPath);
         } catch (error) {
             console.error('[CONFIG] Error saving config:', error.message);
         }
@@ -127,7 +132,11 @@ class ConfigManager {
     _watch() {
         try {
             fs.watch(this.configPath, (eventType) => {
-                if (eventType === 'change') {
+                if (Date.now() < this.suppressWatchUntil) {
+                    return;
+                }
+
+                if (eventType === 'change' || eventType === 'rename') {
                     // Debounce для избежания множественных срабатываний
                     if (this.watchTimeout) {
                         clearTimeout(this.watchTimeout);
