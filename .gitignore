@@ -1,6 +1,11 @@
 config.json
 export/
+export
 .DS_Store
 node_modules/
 plans/
 logs/
+
+# Deploy script (local only)
+deploy.cmd
+deploy.example.cmd
