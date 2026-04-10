@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { scanDirectory, IGNORED_DIRS } = require("../validators/file_scanner");
 const { logMessage } = require("./helper");
+const logger = require("./logger");
 const paths = require("./paths");
 
 const SNAPSHOTS_DIR = "snapshots";
@@ -14,7 +15,7 @@ function createSnapshots(exportDir = paths.export) {
 
     if (!fs.existsSync(exportDir)) {
         logMessage.error(`Export directory not found: ${exportDir}`);
-        process.exit(1);
+        return 1;
     }
 
     const entries = fs.readdirSync(exportDir, { withFileTypes: true });
@@ -48,6 +49,8 @@ function createSnapshots(exportDir = paths.export) {
     logMessage.success(
         `Snapshot creation complete. Total: ${totalFiles} files in ${totalChannels} channels.`
     );
+
+    return 0;
 }
 
 /**
@@ -136,7 +139,16 @@ if (require.main === module) {
     const exportDirArg = args[0]
         ? path.resolve(args[0])
         : paths.export;
-    createSnapshots(exportDirArg);
+    logger.init();
+
+    let exitCode = 0;
+    try {
+        exitCode = createSnapshots(exportDirArg);
+    } finally {
+        logger.close();
+    }
+
+    process.exit(exitCode);
 }
 
 module.exports = { createSnapshots };

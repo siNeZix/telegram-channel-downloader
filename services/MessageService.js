@@ -9,9 +9,11 @@ const {
     buildFileName,
     filterString,
     logMessage,
-    loadSnapshots
+    loadSnapshots,
+    initDownloadState
 } = require("../utils/helper");
 const { createFloodState } = require("./FloodControl");
+const { TelegramEntityResolver } = require("./TelegramEntityResolver");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
 const CHECK_PROGRESS_INTERVAL_MS = 5000;
@@ -23,6 +25,7 @@ class MessageService {
     constructor(client) {
         this.client = client;
         this.floodState = createFloodState();
+        this.entityResolver = new TelegramEntityResolver(client);
     }
 
     /**
@@ -57,15 +60,15 @@ class MessageService {
 
         paths.ensureDir(outputFolder);
 
-        // Инициализация БД
         db.initDatabase(channelId, outputFolder);
+        initDownloadState(channelId, outputFolder);
 
-        // Синхронизация снапшотов
         const snapshotFiles = loadSnapshots(outputFolder);
         if (snapshotFiles.size > 0) {
             const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
             if (syncedCount > 0) {
                 logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
+                initDownloadState(channelId, outputFolder);
             }
         }
 
@@ -98,7 +101,8 @@ class MessageService {
             let messages = await this.floodState.runWithFloodControl(
                 "getMessages",
                 async () => {
-                    return this.client.getMessages(channelId, {
+                    const inputPeer = await this.entityResolver.resolve(channelId);
+                    return this.client.getMessages(inputPeer, {
                         limit: messageLimit,
                         offsetId: offsetId,
                     });
@@ -160,6 +164,95 @@ class MessageService {
     }
 
     /**
+     * Полностью восстанавливает SQLite базу сообщений из Telegram API,
+     * не скачивая медиа и не меняя статус downloaded для новых записей.
+     */
+    async rebuildDatabaseFromApi(channelId, options = {}) {
+        const {
+            outputFolder = paths.getChannelExportPath(channelId),
+            includeSnapshots = false,
+        } = options;
+
+        paths.ensureDir(outputFolder);
+        db.initDatabase(channelId, outputFolder);
+        initDownloadState(channelId, outputFolder);
+
+        if (includeSnapshots) {
+            const snapshotFiles = loadSnapshots(outputFolder);
+            if (snapshotFiles.size > 0) {
+                const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
+                if (syncedCount > 0) {
+                    logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
+                }
+            }
+        }
+
+        let offsetId = 0;
+        let totalFetched = 0;
+        let totalStored = 0;
+        let totalMediaFound = 0;
+        let totalMessagesInChannel = 0;
+
+        while (true) {
+            const messageLimit = config.get("download.messageLimit");
+            logMessage.info(`[DB-REBUILD] Fetching next batch of messages (limit: ${messageLimit}, offset: ${offsetId})...`);
+
+            const messages = await this.floodState.runWithFloodControl(
+                "rebuildDatabaseFromApi",
+                async () => {
+                    const inputPeer = await this.entityResolver.resolve(channelId);
+                    return this.client.getMessages(inputPeer, {
+                        limit: messageLimit,
+                        offsetId,
+                    });
+                }
+            );
+
+            if (totalMessagesInChannel === 0 && messages.total > 0) {
+                totalMessagesInChannel = messages.total;
+                logMessage.info(`[DB-REBUILD] Total messages in channel: ${totalMessagesInChannel}`);
+            }
+
+            if (messages.length === 0) {
+                logMessage.success(`[DB-REBUILD] Done. Stored ${totalStored} messages from API`);
+                break;
+            }
+
+            totalFetched += messages.length;
+
+            const filteredMessages = messages.filter((msg) => msg.message != undefined || msg.media != undefined);
+            const processedMessages = [];
+
+            for (const message of filteredMessages) {
+                const processed = this.processMessage(message, outputFolder, channelId);
+                if (processed) {
+                    processedMessages.push(processed);
+                    if (processed.isMedia) {
+                        totalMediaFound++;
+                    }
+                }
+            }
+
+            db.saveMessages(channelId, outputFolder, messages, processedMessages);
+            totalStored += filteredMessages.length;
+
+            const percent = messages.total > 0
+                ? Math.round((totalFetched * 100) / messages.total)
+                : 100;
+            logMessage.info(`[DB-REBUILD] Progress: fetched=${totalFetched}/${messages.total || totalFetched} (${percent}%), stored=${totalStored}, media=${totalMediaFound}`);
+
+            offsetId = messages[messages.length - 1].id;
+        }
+
+        return {
+            totalFetched,
+            totalStored,
+            totalMediaFound,
+            totalMessagesInChannel,
+        };
+    }
+
+    /**
      * Обработать сообщение и извлечь метаданные
      */
     processMessage(message, outputFolder, channelId) {
@@ -195,7 +288,8 @@ class MessageService {
         const result = await this.floodState.runWithFloodControl(
             "getMessagesByIds",
             async () => {
-                return this.client.getMessages(channelId, {
+                const inputPeer = await this.entityResolver.resolve(channelId);
+                return this.client.getMessages(inputPeer, {
                     ids: messageIds,
                 });
             }

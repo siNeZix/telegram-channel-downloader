@@ -10,10 +10,12 @@ const {
 	getMediaRelativePath,
 	clearFileCheckCache,
 	addFileToCheckCache,
+	initDownloadState,
 	buildFileName,
 	filterString,
 	fileCheckCache,
 	loadSnapshots,
+	downloadState,
 } = require("../utils/helper");
 const {
 	getLastSelection,
@@ -24,6 +26,7 @@ const { circularStringify } = require("../utils/helper");
 const paths = require("../utils/paths");
 const { MessageService } = require("../services/MessageService");
 const { DownloadManager } = require("../services/DownloadManager");
+const { TelegramEntityResolver } = require("../services/TelegramEntityResolver");
 const { createFloodState } = require("../services/FloodControl");
 const { ProgressLogger, PROGRESS_LOG_INTERVAL_SECONDS } = require("../services/ProgressLogger");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
@@ -36,6 +39,13 @@ const CHECK_PROGRESS_INTERVAL_MS = 5000;
 
 const resolveOutputFolder = (channelId, options = {}) =>
 	options.outputFolder || paths.getChannelExportPath(channelId, options.exportPath);
+
+const getEntityResolver = (client) => {
+	if (!client.__tgdlEntityResolver) {
+		client.__tgdlEntityResolver = new TelegramEntityResolver(client);
+	}
+	return client.__tgdlEntityResolver;
+};
 
 // Логирование прогресса проверки файлов
 const logCheckProgress = (checked, total, skipped, newFiles, startedAt) => {
@@ -273,6 +283,7 @@ const downloadMessageMedia = async (client, message, mediaPath, floodState, chan
 			// Отмечаем файл как скачанный в БД
 			if (channelId && outputFolder) {
 				db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+				downloadState.markDownloaded(message.id);
 				logMessage.dl(`Marked as downloaded in DB: msgId=${msgId}, channelId=${channelId}`);
 			}
 
@@ -358,14 +369,17 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		db.initDatabase(channelId, outputFolder);
 		logMessage.db(`Database initialized successfully`);
 
+		// Preload all downloaded IDs and media paths from DB into memory
+		initDownloadState(channelId, outputFolder);
+
 		// Синхронизируем статус downloaded из снапшотов для уже существующих файлов
-		// Это предотвращает повторную загрузку файлов, перенесенных из других копий
 		const snapshotFiles = loadSnapshots(outputFolder);
 		logMessage.cache(`Loaded ${snapshotFiles.size} files from snapshots`);
 		if (snapshotFiles.size > 0) {
 			const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
 			if (syncedCount > 0) {
 				logMessage.info(`[DB] Synced ${syncedCount} existing files from snapshots as downloaded`);
+				initDownloadState(channelId, outputFolder);
 			}
 		}
 
@@ -397,19 +411,20 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 			let messages = await runWithFloodControl(
 				floodState,
 				"getMessages",
-				async () => {
-					// Проверяем что client инициализирован корректно
-					if (!client) {
-						throw new Error('Client is not initialized (null/undefined)');
-					}
-					if (typeof client.getMessages !== 'function') {
-						throw new Error(`Client is not properly initialized: getMessages is ${typeof client.getMessages}`);
-					}
-					return client.getMessages(channelId, {
-						limit: messageLimit,
-						offsetId: offsetId,
-					});
-				},
+			async () => {
+				// Проверяем что client инициализирован корректно
+				if (!client) {
+					throw new Error('Client is not initialized (null/undefined)');
+				}
+				if (typeof client.getMessages !== 'function') {
+					throw new Error(`Client is not properly initialized: getMessages is ${typeof client.getMessages}`);
+				}
+				const inputPeer = await getEntityResolver(client).resolve(channelId);
+				return client.getMessages(inputPeer, {
+					limit: messageLimit,
+					offsetId: offsetId,
+				});
+			},
 			);
 			logMessage.fetch(`Fetched ${messages.length} messages (total so far: ${totalFetched + messages.length})`);
 			totalFetched += messages.length;
@@ -832,6 +847,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 
 const getMessageDetail = async (client, channelId, messageIds, options = {}) => {
 	const { check: enableCheck = false, deep: deepValidation = false } = options;
+	let outputFolder;
 
 	logMessage.fetch(`=== Starting getMessageDetail: channelId=${channelId}, messageIds=${JSON.stringify(messageIds)}, check=${enableCheck}, deep=${deepValidation} ===`);
 
@@ -857,14 +873,15 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 			floodState,
 			"getMessagesByIds",
 			async () => {
-				return client.getMessages(channelId, {
+				const inputPeer = await getEntityResolver(client).resolve(channelId);
+				return client.getMessages(inputPeer, {
 					ids: messageIds,
 				});
 			},
 		);
 		logMessage.fetch(`getMessagesByIds returned ${result.length} messages for ids=${JSON.stringify(messageIds)}`);
 		
-		let outputFolder = resolveOutputFolder(channelId, options);
+		outputFolder = resolveOutputFolder(channelId, options);
 		if (!fs.existsSync(outputFolder)) {
 			fs.mkdirSync(outputFolder, { recursive: true });
 			logMessage.fetch(`Created output folder: ${outputFolder}`);
@@ -873,6 +890,9 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 		// Инициализируем SQLite базу данных для этого канала
 		logMessage.db(`Initializing database for channel: ${channelId}`);
 		db.initDatabase(channelId, outputFolder);
+		initDownloadState(channelId, outputFolder);
+
+		db.saveMessages(channelId, outputFolder, result, []);
 
 		let activeDownloads = new Set();
 		let totalFilesToDownload = 0;
@@ -980,7 +1000,11 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 						: checkFileExist(message, outputFolder, channelId);
 					if (fileExist) {
 						logMessage.cache(`Skipping existing: msgId=${message.id}`);
-						continue; // Пропускаем существующие файлы
+						if (channelId && outputFolder) {
+							db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+							downloadState.markDownloaded(message.id);
+						}
+						continue;
 					}
 					queuedDownloads += 1;
 					const mediaPath = getMediaPath(message, outputFolder);
@@ -1070,19 +1094,22 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 		db.closeDatabase(outputFolder);
 		logMessage.fetch(`=== getMessageDetail completed ===`);
 		
-		return true;
+		return result;
 	} catch (err) {
 		logMessage.error(
 			`[FETCH] Error in getMessageDetail: ${err?.message || String(err)}`,
 		);
-		// Закрываем БД в случае ошибки
-		db.closeDatabase(outputFolder);
+		if (outputFolder) {
+			db.closeDatabase(outputFolder);
+		}
+		throw err;
 	}
 };
 
 const sendMessage = async (client, channelId, message) => {
 	try {
-		let res = await client.sendMessage(channelId, { message });
+		const inputPeer = await getEntityResolver(client).resolve(channelId);
+		let res = await client.sendMessage(inputPeer, { message });
 
 		logMessage.success(`[MSG] Message sent successfully with ID: ${res.id}`);
 	} catch (err) {
@@ -1183,30 +1210,33 @@ const startChannelListener = async (client, channelId, options = {}) => {
 	);
 };
 
+const rebuildDatabaseFromApi = async (client, channelId, options = {}) => {
+	const outputFolder = resolveOutputFolder(channelId, options);
+	const messageService = new MessageService(client);
+
+	try {
+		logMessage.db(`=== Starting rebuildDatabaseFromApi: channelId=${channelId}, outputFolder=${outputFolder} ===`);
+		const result = await messageService.rebuildDatabaseFromApi(channelId, {
+			...options,
+			outputFolder,
+			includeSnapshots: false,
+		});
+		logMessage.success(`[DB-REBUILD] Database rebuild complete: stored=${result.totalStored}, media=${result.totalMediaFound}`);
+		return result;
+	} catch (err) {
+		logMessage.error(`[DB-REBUILD] Error rebuilding database: ${err?.message || String(err)}`);
+		throw err;
+	} finally {
+		db.closeDatabase(outputFolder);
+	}
+};
+
 // --- Download messages by IDs ---
 const downloadMessagesByIds = async (client, channelId, messageIds, options = {}) => {
 	try {
 		logMessage.dl(`=== Starting downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)} ===`);
 		const outputFolder = resolveOutputFolder(channelId, options);
-
-		const messageArr = await getMessageDetail(client, channelId, messageIds, { ...options, outputFolder });
-		for (const message of messageArr) {
-			// Проверяем, есть ли медиа в сообщении
-			if (message.media) {
-				const mediaPath = getMediaPath(message, outputFolder);
-				await downloadMessageMedia(
-					client,
-					message,
-					mediaPath,
-					createFloodState(),
-					channelId,
-					outputFolder
-				);
-				logMessage.success(`[DL] Downloaded media from message: ${message.id}`);
-			} else {
-				logMessage.dl(`[DL] No media in message: ${message.id}`);
-			}
-		}
+		await getMessageDetail(client, channelId, messageIds, { ...options, outputFolder });
 		logMessage.success("[DL] Done with downloading messages");
 	} catch (error) {
 		logMessage.error(`[DL] Error downloading messages by IDs: ${error.message}`);
@@ -1216,6 +1246,7 @@ const downloadMessagesByIds = async (client, channelId, messageIds, options = {}
 module.exports = {
 	getMessages,
 	getMessageDetail,
+	rebuildDatabaseFromApi,
 	sendMessage,
 	startChannelListener,
 	downloadMessagesByIds,

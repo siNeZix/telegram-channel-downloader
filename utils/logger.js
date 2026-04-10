@@ -2,39 +2,25 @@ const fs = require('fs');
 const path = require('path');
 const pathsManager = require('./paths');
 
-/** @type {fs.WriteStream|null} */
 let debugStream = null;
-/** @type {fs.WriteStream|null} */
 let normalStream = null;
+let initialized = false;
 
-/** Регулярка для удаления ANSI-цветов */
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
-/** Максимальное количество архивных логов */
 const MAX_ARCHIVE_FILES = 50;
-/** Имя файла с полным дебаг-логом */
 const DEBUG_LOG_NAME = 'debug.log';
-/** Имя текущего обычного лога */
 const CURRENT_LOG_NAME = 'current.log';
-/** Регулярка для определения архивных логов по дате */
+const DEBUG_ARCHIVE_PREFIX = 'debug-';
 const ARCHIVE_LOG_REGEX = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
+const DEBUG_ARCHIVE_LOG_REGEX = /^debug-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
+const MAX_DEBUG_LOG_SIZE_BYTES = 10 * 1024 * 1024;
 
-/** Timestamp последнего лога (для расчёта дельты) */
 let lastLogTimestamp = null;
 
-/**
- * Удалить ANSI escape-последовательности из строки
- * @param {string} str
- * @returns {string}
- */
 function stripAnsi(str) {
     return str.replace(ANSI_REGEX, '');
 }
 
-/**
- * Форматировать дату для имени файла
- * @param {Date} date
- * @returns {string}
- */
 function formatDateForFilename(date) {
     const y = date.getFullYear();
     const mo = String(date.getMonth() + 1).padStart(2, '0');
@@ -45,9 +31,6 @@ function formatDateForFilename(date) {
     return `${y}-${mo}-${d}-${h}-${mi}-${s}`;
 }
 
-/**
- * Очистить папку логов от старых архивов, оставив не более MAX_ARCHIVE_FILES
- */
 function cleanupOldArchives() {
     const logsDir = pathsManager.logs;
 
@@ -71,22 +54,71 @@ function cleanupOldArchives() {
             }
         }
     } catch (err) {
-        // Игнорируем ошибки чтения/удаления при очистке
+        reportLoggerFailure(err, 'Failed to clean old current log archives');
     }
 }
 
-/**
- * Инициализировать логгер: создать папку, архивировать старые логи, открыть потоки
- */
-function init() {
+function reportLoggerFailure(err, context) {
+    const message = err?.message || String(err);
+    try {
+        process.stderr.write(`[LOGGER ERROR] ${context}: ${message}\n`);
+    } catch (stderrErr) {
+        // Nothing else we can do if stderr is unavailable.
+    }
+}
+
+function rotateDebugLogIfNeeded(logsDir, debugLogPath) {
+    if (!fs.existsSync(debugLogPath)) return;
+
+    try {
+        const stats = fs.statSync(debugLogPath);
+        if (stats.size < MAX_DEBUG_LOG_SIZE_BYTES) {
+            return;
+        }
+
+        const archiveName = `${DEBUG_ARCHIVE_PREFIX}${formatDateForFilename(new Date())}.log`;
+        const archivePath = path.join(logsDir, archiveName);
+        fs.renameSync(debugLogPath, archivePath);
+    } catch (err) {
+        reportLoggerFailure(err, 'Failed to rotate debug.log');
+    }
+}
+
+function cleanupOldDebugArchives() {
     const logsDir = pathsManager.logs;
 
-    // 1. Создать папку логов
+    if (!fs.existsSync(logsDir)) return;
+
+    try {
+        const files = fs.readdirSync(logsDir)
+            .filter(f => DEBUG_ARCHIVE_LOG_REGEX.test(f))
+            .map(f => {
+                const filePath = path.join(logsDir, f);
+                const stats = fs.statSync(filePath);
+                return { name: f, mtime: stats.mtime };
+            })
+            .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+        if (files.length > MAX_ARCHIVE_FILES) {
+            const toDelete = files.slice(MAX_ARCHIVE_FILES);
+            for (const file of toDelete) {
+                fs.unlinkSync(path.join(logsDir, file.name));
+            }
+        }
+    } catch (err) {
+        reportLoggerFailure(err, 'Failed to clean old debug log archives');
+    }
+}
+
+function init() {
+    if (initialized && debugStream && normalStream) return;
+
+    const logsDir = pathsManager.logs;
+
     if (!fs.existsSync(logsDir)) {
         fs.mkdirSync(logsDir, { recursive: true });
     }
 
-    // 2. Архивировать предыдущий обычный лог (current.log -> yyyy-mm-dd-hh-mm-ss.log)
     const currentLogPath = path.join(logsDir, CURRENT_LOG_NAME);
     if (fs.existsSync(currentLogPath)) {
         const archiveName = formatDateForFilename(new Date()) + '.log';
@@ -94,42 +126,40 @@ function init() {
         try {
             fs.renameSync(currentLogPath, archivePath);
         } catch (err) {
-            // Если не удалось переименовать (файл занят), просто удалим
             try { fs.unlinkSync(currentLogPath); } catch (e) {}
         }
     }
 
-    // 3. Очистить debug.log (перезаписать)
     const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
-    fs.writeFileSync(debugLogPath, '');
+    rotateDebugLogIfNeeded(logsDir, debugLogPath);
+    if (!fs.existsSync(debugLogPath)) {
+        fs.writeFileSync(debugLogPath, '');
+    }
 
-    // 4. Очистить старые архивы
     cleanupOldArchives();
+    cleanupOldDebugArchives();
 
-    // 5. Открыть потоки записи
     debugStream = fs.createWriteStream(debugLogPath, { flags: 'a', encoding: 'utf8' });
     normalStream = fs.createWriteStream(currentLogPath, { flags: 'a', encoding: 'utf8' });
+
+    debugStream.on('error', (err) => reportLoggerFailure(err, 'debug stream error'));
+    normalStream.on('error', (err) => reportLoggerFailure(err, 'current stream error'));
+
+    initialized = true;
 }
 
-/**
- * Записать сообщение в лог с расчётом дельты времени
- * @param {string} level - Уровень лога (debug, info, success, warn, error)
- * @param {string} message - Сообщение (может содержать ANSI коды)
- */
 function write(level, message) {
-    if (!debugStream || !normalStream) {
+    if (!initialized || !debugStream || !normalStream) {
         init();
     }
 
     const cleanMessage = stripAnsi(message);
     const now = new Date();
     const timestamp = now.toISOString();
-    
-    // Рассчитываем дельту времени с момента последнего лога
+
     let deltaStr = '';
     if (lastLogTimestamp !== null) {
         const deltaMs = now - lastLogTimestamp;
-        // Форматируем дельту для наглядности: ms или s.ms
         if (deltaMs >= 1000) {
             deltaStr = ` (+${(deltaMs / 1000).toFixed(2)}s)`;
         } else {
@@ -137,36 +167,83 @@ function write(level, message) {
         }
     }
     lastLogTimestamp = now;
-    
+
     const fileLine = `[${timestamp}] [${level.toUpperCase()}]${deltaStr} ${cleanMessage}\n`;
 
-    // Все пишем в debug.log
-    debugStream.write(fileLine);
+    try { debugStream.write(fileLine); } catch (e) { reportLoggerFailure(e, 'Failed writing to debug log'); }
 
-    // Важные уровни пишем в current.log
     const normalLevels = ['info', 'success', 'warn', 'error'];
     if (normalLevels.includes(level)) {
-        normalStream.write(fileLine);
+        try { normalStream.write(fileLine); } catch (e) { reportLoggerFailure(e, 'Failed writing to current log'); }
     }
 }
 
-/**
- * Закрыть потоки логирования (вызывать при завершении приложения)
- */
+function writeSync(level, message) {
+    const logsDir = pathsManager.logs;
+    const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
+    const currentLogPath = path.join(logsDir, CURRENT_LOG_NAME);
+    const cleanMessage = stripAnsi(message);
+    const timestamp = new Date().toISOString();
+    const fileLine = `[${timestamp}] [${level.toUpperCase()}] ${cleanMessage}\n`;
+
+    try {
+        if (!fs.existsSync(logsDir)) {
+            fs.mkdirSync(logsDir, { recursive: true });
+        }
+    } catch (e) { reportLoggerFailure(e, 'Failed to create logs directory for sync write'); }
+
+    try {
+        fs.appendFileSync(debugLogPath, fileLine);
+    } catch (e) { reportLoggerFailure(e, 'Failed sync write to debug log'); }
+
+    const normalLevels = ['info', 'success', 'warn', 'error'];
+    if (normalLevels.includes(level)) {
+        try {
+            fs.appendFileSync(currentLogPath, fileLine);
+        } catch (e) { reportLoggerFailure(e, 'Failed sync write to current log'); }
+    }
+}
+
 function close() {
     if (debugStream) {
-        debugStream.end();
+        try { debugStream.end(); } catch (e) { reportLoggerFailure(e, 'Failed to close debug stream'); }
         debugStream = null;
     }
     if (normalStream) {
-        normalStream.end();
+        try { normalStream.end(); } catch (e) { reportLoggerFailure(e, 'Failed to close current stream'); }
         normalStream = null;
     }
+    initialized = false;
 }
+
+function flush() {
+    if (debugStream) {
+        try { debugStream.write(''); } catch (e) { reportLoggerFailure(e, 'Failed to flush debug stream'); }
+    }
+    if (normalStream) {
+        try { normalStream.write(''); } catch (e) { reportLoggerFailure(e, 'Failed to flush current stream'); }
+    }
+}
+
+process.on('uncaughtException', (err) => {
+    const msg = `[FATAL] Uncaught exception: ${err?.message || String(err)}\n${err?.stack || ''}`;
+    writeSync('error', msg);
+    console.error(msg);
+    close();
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+    const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ''}`;
+    writeSync('error', msg);
+    console.error(msg);
+});
 
 module.exports = {
     init,
     write,
+    writeSync,
     close,
+    flush,
     stripAnsi,
 };

@@ -6,9 +6,66 @@ const logger = require("./logger");
 
 // Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
 let fileCheckCache = new Map();
-
-// Кэш снимков: Map<channelPath, Set<relativeFilePath>>
 let snapshotsCache = new Map();
+
+class DownloadState {
+	constructor() {
+		this.downloadedIds = new Set();
+		this.undownloadedMediaPaths = new Map();
+		this.initialized = false;
+		this.outputFolder = null;
+		this.snapshotFiles = new Set();
+	}
+
+	init(channelId, outputFolder) {
+		if (this.initialized && this.outputFolder === outputFolder) {
+			return;
+		}
+		this.outputFolder = outputFolder;
+		this.downloadedIds = db.getDownloadedSet(channelId, outputFolder);
+		this.undownloadedMediaPaths = db.getMediaPathMap(channelId, outputFolder);
+		this.snapshotFiles = loadSnapshots(outputFolder);
+		this.initialized = true;
+		logMessage.cache(
+			`[DownloadState] Initialized: downloaded=${this.downloadedIds.size}, ` +
+			`undownloadedMedia=${this.undownloadedMediaPaths.size}, snapshots=${this.snapshotFiles.size}`
+		);
+	}
+
+	markDownloaded(messageId) {
+		this.downloadedIds.add(messageId);
+	}
+
+	isDownloaded(messageId) {
+		return this.downloadedIds.has(messageId);
+	}
+
+	hasSnapshot(relativePath) {
+		if (this.snapshotFiles.has(relativePath)) return true;
+		const forward = relativePath.replace(/\\/g, "/");
+		if (this.snapshotFiles.has(forward)) return true;
+		const backward = relativePath.replace(/\//g, "\\");
+		if (this.snapshotFiles.has(backward)) return true;
+		return false;
+	}
+
+	findUndownloadedByPath(relativePath) {
+		if (this.undownloadedMediaPaths.has(relativePath)) {
+			return this.undownloadedMediaPaths.get(relativePath);
+		}
+		const forward = relativePath.replace(/\\/g, "/");
+		if (this.undownloadedMediaPaths.has(forward)) {
+			return this.undownloadedMediaPaths.get(forward);
+		}
+		const backward = relativePath.replace(/\//g, "\\");
+		if (this.undownloadedMediaPaths.has(backward)) {
+			return this.undownloadedMediaPaths.get(backward);
+		}
+		return null;
+	}
+}
+
+const downloadState = new DownloadState();
 
 const SNAPSHOTS_DIR = "snapshots";
 
@@ -46,14 +103,66 @@ const LOG_LEVELS = {
 	error: 30,
 };
 
-// Поддержка флага --debug из командной строки
 const DEBUG_FLAG = process.argv.includes("--debug");
 const CURRENT_LOG_LEVEL = DEBUG_FLAG ? "debug" : (process.env.LOG_LEVEL || "info");
 
 const shouldLog = (level) =>
 	LOG_LEVELS[level] >= (LOG_LEVELS[CURRENT_LOG_LEVEL] || LOG_LEVELS.info);
 
-// Get the media type of a message
+const LOG_PREFIXES = {
+	auth: '[AUTH]',
+	db: '[DB]',
+	fetch: '[FETCH]',
+	dl: '[DL]',
+	flood: '[FLOOD]',
+	valid: '[VALID]',
+	init: '[INIT]',
+	dialog: '[DIALOG]',
+	filter: '[FILTER]',
+	cache: '[CACHE]',
+};
+
+const logMessage = {
+	info: (message) => {
+		const line = `ℹ️  ${consoleColors.blue} ${message} ${consoleColors.reset}`;
+		console.log(line);
+		logger.write("info", line);
+	},
+	error: (message) => {
+		const line = `❌ ${consoleColors.red} ${message} ${consoleColors.reset}`;
+		console.log(line);
+		logger.write("error", line);
+	},
+	success: (message) => {
+		const line = `✅ ${consoleColors.green} ${message} ${consoleColors.reset}`;
+		console.log(line);
+		logger.write("success", line);
+	},
+	warn: (message) => {
+		const line = `⚠️  ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
+		console.log(line);
+		logger.write("warn", line);
+	},
+	debug: (message) => {
+		const line = `🔍 ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
+		logger.write("debug", line);
+		if (shouldLog("debug")) {
+			console.log(line);
+		}
+	},
+
+	auth: (message) => logMessage.debug(`${LOG_PREFIXES.auth} ${message}`),
+	db: (message) => logMessage.debug(`${LOG_PREFIXES.db} ${message}`),
+	fetch: (message) => logMessage.debug(`${LOG_PREFIXES.fetch} ${message}`),
+	dl: (message) => logMessage.debug(`${LOG_PREFIXES.dl} ${message}`),
+	flood: (message) => logMessage.debug(`${LOG_PREFIXES.flood} ${message}`),
+	valid: (message) => logMessage.debug(`${LOG_PREFIXES.valid} ${message}`),
+	init: (message) => logMessage.debug(`${LOG_PREFIXES.init} ${message}`),
+	dialog: (message) => logMessage.debug(`${LOG_PREFIXES.dialog} ${message}`),
+	filter: (message) => logMessage.debug(`${LOG_PREFIXES.filter} ${message}`),
+	cache: (message) => logMessage.debug(`${LOG_PREFIXES.cache} ${message}`),
+};
+
 const getMediaType = (message) => {
 	if (message.media) {
 		if (message.media.photo) return MEDIA_TYPES.IMAGE;
@@ -180,92 +289,73 @@ const checkFileExist = (message, outputFolder, channelId = null) => {
 	const filePath = path.join(outputFolder, folderType, fileName);
 	const relativePath = path.join(folderType, fileName);
 
-	// 1. Проверяем кэш (самый быстрый путь)
+	// 1. In-memory cache (fastest)
 	if (fileCheckCache.has(filePath)) {
 		const cached = fileCheckCache.get(filePath);
-		// Восстанавливаем флаг _fromSnapshot из кэша
 		if (message && cached.fromSnapshot !== undefined) {
 			message._fromSnapshot = cached.fromSnapshot;
 		}
 		return cached.exists && cached.size > 0;
 	}
 
-	// 2. Проверяем снапшоты ПЕРВЫМИ - без обращения к диску и БД
-	// Если файл есть в снапшоте, считаем его валидным
-	const snapshots = loadSnapshots(outputFolder);
-	
-	// DEBUG: Проверяем оба варианта пути (forward slash и backslash)
-	const relativePathForward = relativePath.replace(/\\/g, "/");
-	const snapshotHasFile = snapshots.has(relativePath) || snapshots.has(relativePathForward);
-	
-	// DEBUG: выводим информацию о первых проверках для диагностики
-	const totalSnapshots = snapshots.size;
-	if (totalSnapshots > 0 && !snapshotHasFile) {
-		// Проверяем, есть ли хотя бы один файл с таким же folderType
-		let hasAnyInFolder = false;
-		for (const snapPath of snapshots) {
-			if (snapPath.startsWith(folderType + "/") || snapPath.startsWith(folderType + "\\")) {
-				hasAnyInFolder = true;
-				break;
-			}
+	// 2. DB-based check via preloaded DownloadState
+	if (channelId && downloadState.initialized) {
+		// 2a. Message already downloaded
+		if (downloadState.isDownloaded(message.id)) {
+			fileCheckCache.set(filePath, { exists: true, size: 0, fromSnapshot: false });
+			return true;
 		}
-		if (!hasAnyInFolder) {
-			logMessage.debug(`No snapshot entries for folder '${folderType}', total snapshots: ${totalSnapshots}`);
+
+		// 2b. Snapshot knows this file
+		if (downloadState.hasSnapshot(relativePath)) {
+			if (message) message._fromSnapshot = true;
+			fileCheckCache.set(filePath, { exists: true, size: 0, fromSnapshot: true });
+			return true;
 		}
-	}
 
-	let fromSnapshot = false;
-	if (snapshotHasFile) {
-		// Файл в снапшоте - сразу возвращаем true, кэшируем результат
-		fromSnapshot = true;
-		if (message) {
-			message._fromSnapshot = true;
-		}
-		fileCheckCache.set(filePath, { exists: true, size: 0, fromSnapshot: true });
-		return true;
-	}
-
-	// 3. Проверяем БД, если channelId передан
-	let markedAsDownloaded = false;
-	if (channelId) {
-		markedAsDownloaded = db.isFileDownloaded(channelId, outputFolder, message.id);
-	}
-
-	// 4. Проверяем файл на диске ТОЛЬКО если БД не подтвердила загрузку
-	let fileSize = 0;
-	if (!markedAsDownloaded) {
-		try {
+		// 2c. File not in DB as downloaded and not in snapshots
+		// => Only check disk if we have a media path mapped as undownloaded
+		// (avoids fs.existsSync for messages DB already knows about)
+		const foundInUndownloaded = downloadState.findUndownloadedByPath(relativePath);
+		if (foundInUndownloaded !== null) {
+			// DB says not downloaded, snapshot says not found → check disk once
 			if (fs.existsSync(filePath)) {
 				const stats = fs.statSync(filePath);
 				if (stats.size > 0) {
-					fileSize = stats.size;
-				} else {
-					// Файл существует, но пустой - не считаем скачанным
-					fileCheckCache.set(filePath, { exists: false, size: 0 });
-					return false;
+					fileCheckCache.set(filePath, { exists: true, size: stats.size, fromSnapshot: false });
+					return true;
 				}
-			} else {
-				// Файла нет на диске
-				fileCheckCache.set(filePath, { exists: false, size: 0 });
-				return false;
 			}
-		} catch (err) {
-			logMessage.error(`Error checking file ${filePath}: ${err.message}`);
 			fileCheckCache.set(filePath, { exists: false, size: 0 });
 			return false;
 		}
+
+		// 2d. Message not in preloaded sets at all (new message from API)
+		// Fall through to disk check
 	}
 
-	// Файл считается существующим если:
-	// - Есть отметка в БД о загрузке
-	// - ИЛИ файл найден на диске (и БД не говорит обратного)
-	const exists = markedAsDownloaded || (fileSize > 0);
-
-	// Сохраняем в кэш с информацией об источнике (для снапшотов уже сохранено выше)
-	if (!fromSnapshot) {
-		fileCheckCache.set(filePath, { exists, size: fileSize, fromSnapshot: false });
+	// 3. Fallback: single DB query (when DownloadState not initialized)
+	if (channelId && !downloadState.initialized) {
+		const markedAsDownloaded = db.isFileDownloaded(channelId, outputFolder, message.id);
+		if (markedAsDownloaded) {
+			fileCheckCache.set(filePath, { exists: true, size: 0, fromSnapshot: false });
+			return true;
+		}
 	}
-	return exists;
+
+	// 4. Disk check (last resort)
+	if (fs.existsSync(filePath)) {
+		const stats = fs.statSync(filePath);
+		if (stats.size > 0) {
+			fileCheckCache.set(filePath, { exists: true, size: stats.size, fromSnapshot: false });
+			return true;
+		}
+		fileCheckCache.set(filePath, { exists: false, size: 0 });
+		return false;
+	}
+
+	fileCheckCache.set(filePath, { exists: false, size: 0 });
+	return false;
 };
 
 // Очистка кэша проверки файлов
@@ -281,6 +371,10 @@ const clearSnapshotsCache = () => {
 // Добавление файла в кэш после скачивания
 const addFileToCheckCache = (filePath, size) => {
 	fileCheckCache.set(filePath, { exists: true, size });
+};
+
+const initDownloadState = (channelId, outputFolder) => {
+	downloadState.init(channelId, outputFolder);
 };
 
 const getMediaRelativePath = (message) => {
@@ -315,73 +409,6 @@ const getDialogType = (dialog) => {
 	if (dialog.isGroup) return "Group";
 	if (dialog.isUser) return "User";
 	return "Unknown";
-};
-
-// Префиксы модулей для унификации debug-логов
-const LOG_PREFIXES = {
-	auth: '[AUTH]',
-	db: '[DB]',
-	fetch: '[FETCH]',
-	dl: '[DL]',
-	flood: '[FLOOD]',
-	valid: '[VALID]',
-	init: '[INIT]',
-	dialog: '[DIALOG]',
-	filter: '[FILTER]',
-	cache: '[CACHE]',
-};
-
-// Logging utility with enhanced formatting
-const logMessage = {
-	info: (message) => {
-		if (!shouldLog("info")) return;
-		let logMsg = `ℹ️  ${consoleColors.blue} ${message} ${consoleColors.reset}`;
-		console.log(logMsg);
-		logger.write("info", logMsg);
-	},
-	error: (message) => {
-		if (!shouldLog("error")) return;
-		let logMsg = `❌ ${consoleColors.red} ${message} ${consoleColors.reset}`;
-		console.log(logMsg);
-		logger.write("error", logMsg);
-	},
-	success: (message) => {
-		if (!shouldLog("success")) return;
-		let logMsg = `✅ ${consoleColors.green} ${message} ${consoleColors.reset}`;
-		console.log(logMsg);
-		logger.write("success", logMsg);
-	},
-	debug: (message) => {
-		// Всегда записываем в debug.log, независимо от уровня вывода в консоль
-		let logMsg = `🔍 ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
-		logger.write("debug", logMsg);
-		// Выводим в консоль только если уровень позволяет
-		if (shouldLog("debug")) {
-			console.log(logMsg);
-		}
-	},
-	warn: (message) => {
-		if (!shouldLog("warn")) return;
-		let logMsg = `⚠️ ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
-		console.log(logMsg);
-		logger.write("warn", logMsg);
-	},
-	table: (data) => {
-		if (!shouldLog("info")) return;
-		console.table(data);
-	},
-	
-	// --- Унифицированные методы с префиксами ---
-	auth: (message) => logMessage.debug(`${LOG_PREFIXES.auth} ${message}`),
-	db: (message) => logMessage.debug(`${LOG_PREFIXES.db} ${message}`),
-	fetch: (message) => logMessage.debug(`${LOG_PREFIXES.fetch} ${message}`),
-	dl: (message) => logMessage.debug(`${LOG_PREFIXES.dl} ${message}`),
-	flood: (message) => logMessage.debug(`${LOG_PREFIXES.flood} ${message}`),
-	valid: (message) => logMessage.debug(`${LOG_PREFIXES.valid} ${message}`),
-	init: (message) => logMessage.debug(`${LOG_PREFIXES.init} ${message}`),
-	dialog: (message) => logMessage.debug(`${LOG_PREFIXES.dialog} ${message}`),
-	filter: (message) => logMessage.debug(`${LOG_PREFIXES.filter} ${message}`),
-	cache: (message) => logMessage.debug(`${LOG_PREFIXES.cache} ${message}`),
 };
 
 const wait = (second) => {
@@ -422,14 +449,17 @@ module.exports = {
 	getDialogType,
 	logMessage,
 	wait,
-	filterString,
-	circularStringify,
-	clearFileCheckCache,
-	clearSnapshotsCache,
-	addFileToCheckCache,
 	buildFileName,
-	loadSnapshots,
-	MEDIA_TYPES,
+	filterString,
+	clearFileCheckCache,
+	addFileToCheckCache,
+	initDownloadState,
+	downloadState,
 	fileCheckCache,
-	LOG_PREFIXES,
+	loadSnapshots,
+	circularStringify,
+	shouldLog,
+	LOG_LEVELS,
+	consoleColors,
+	MEDIA_TYPES,
 };

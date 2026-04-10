@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
+    "start:auto": "node index.js --auto",
+    "rebuild-db": "node index.js rebuild-db",
     "valid": "node validators/index.js",
     "save-files": "node utils/save_files.js",
     "export-messages": "node utils/export_messages.js"

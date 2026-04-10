@@ -14,10 +14,13 @@ const {
     fileCheckCache,
     logMessage,
     wait,
-    loadSnapshots
+    loadSnapshots,
+    downloadState,
+    initDownloadState
 } = require("../utils/helper");
 const { createFloodState } = require("./FloodControl");
 const { ProgressLogger } = require("./ProgressLogger");
+const { TelegramEntityResolver } = require("./TelegramEntityResolver");
 const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
 
 /**
@@ -27,6 +30,7 @@ class DownloadManager {
     constructor(client) {
         this.client = client;
         this.activeDownloads = new Set();
+        this.entityResolver = new TelegramEntityResolver(client);
         logMessage.dl(`[DL] DownloadManager created, client type: ${typeof client}`);
     }
 
@@ -89,6 +93,7 @@ class DownloadManager {
             // Отмечаем файл как скачанный в БД
             if (channelId && outputFolder) {
                 db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+                downloadState.markDownloaded(message.id);
                 logMessage.dl(`[DL] Marked downloaded in DB: msgId=${msgId}, channelId=${channelId}`);
             }
 
@@ -392,7 +397,10 @@ class DownloadManager {
                     this.activeDownloads.add(downloadPromise);
                 } else {
                     if (fileExist) {
-                        // already counted in skippedExisting
+                        if (channelId && outputFolder) {
+                            db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+                            downloadState.markDownloaded(message.id);
+                        }
                     } else if (!textMatchesFilters) {
                         skippedByTextFilter++;
                     } else {
@@ -454,7 +462,8 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
         const floodState = createFloodState();
 
         logMessage.dl(`[DL] Fetching messages by IDs: ${JSON.stringify(messageIds)}`);
-        const messages = await manager.client.getMessages(channelId, { ids: messageIds });
+        const inputPeer = await manager.entityResolver.resolve(channelId);
+        const messages = await manager.client.getMessages(inputPeer, { ids: messageIds });
         logMessage.dl(`[DL] getMessages returned ${messages.length} messages`);
         
         let activeDownloads = new Set();

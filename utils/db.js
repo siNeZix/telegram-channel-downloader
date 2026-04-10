@@ -2,32 +2,89 @@ const Database = require("better-sqlite3");
 const fs = require("fs");
 const path = require("path");
 
-// Ленивая загрузка helper.js для разрыва циклической зависимости
-// (helper.js требует db.js, а db.js требует logMessage из helper.js)
-let _logMessage = null;
-let _filterString = null;
-const logMessage = () => {
-	if (!_logMessage) {
-		_logMessage = require("./helper").logMessage;
+let _helper = null;
+const helper = () => {
+	if (!_helper) {
+		_helper = require("./helper");
 	}
-	return _logMessage;
+	return _helper;
 };
 
-const filterString = (value) => {
-	if (!_filterString) {
-		_filterString = require("./helper").filterString;
-	}
-	return _filterString(value);
-};
+const logMessage = () => helper().logMessage;
+const filterString = (value) => helper().filterString(value);
+const getMediaRelativePath = (message) => helper().getMediaRelativePath(message);
+const getMediaType = (message) => helper().getMediaType(message);
 
-// Структура для хранения открытых соединений с БД для каждого канала
 const dbConnections = new Map();
 
 const getDbPath = (outputFolder) => path.join(outputFolder, "messages.db");
 const getRawMessagesPath = (outputFolder) => path.join(outputFolder, "raw_message.json");
 const getProcessedMessagesPath = (outputFolder) => path.join(outputFolder, "all_message.json");
 
-const normalizeStoredMediaPath = (mediaPath, outputFolder) => {
+const toTimestamp = (value) => {
+	if (value === null || value === undefined || value === "") {
+		return null;
+	}
+
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return value;
+	}
+
+	const dateValue = new Date(value).getTime();
+	return Number.isFinite(dateValue) ? dateValue : null;
+};
+
+const toSqlInteger = (value) => {
+	if (value === null || value === undefined || value === "") {
+		return null;
+	}
+
+	if (typeof value === "bigint") {
+		return value;
+	}
+
+	if (typeof value === "number") {
+		return Number.isFinite(value) ? value : null;
+	}
+
+	if (typeof value === "string") {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : null;
+	}
+
+	if (typeof value.valueOf === "function") {
+		const primitive = value.valueOf();
+		if (primitive !== value) {
+			return toSqlInteger(primitive);
+		}
+	}
+
+	const textValue = String(value);
+	if (/^-?\d+$/.test(textValue)) {
+		try {
+			return BigInt(textValue);
+		} catch {
+			const parsed = Number(textValue);
+			return Number.isFinite(parsed) ? parsed : null;
+		}
+	}
+
+	return null;
+};
+
+const parseJson = (value) => {
+	if (!value || typeof value !== "string") {
+		return null;
+	}
+
+	try {
+		return JSON.parse(value);
+	} catch {
+		return null;
+	}
+};
+
+const normalizeMediaPath = (mediaPath, outputFolder) => {
 	if (!mediaPath || typeof mediaPath !== "string") {
 		return null;
 	}
@@ -36,173 +93,276 @@ const normalizeStoredMediaPath = (mediaPath, outputFolder) => {
 		return mediaPath.replace(/[\\/]+/g, path.sep);
 	}
 
-	if (!outputFolder) {
-		return mediaPath;
-	}
-
 	const relativePath = path.relative(outputFolder, mediaPath);
 	if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-		return mediaPath;
+		return null;
 	}
 
 	return relativePath;
 };
 
-const getStoredMediaPathVariants = (mediaPath, outputFolder) => {
-	const variants = new Set();
-	const normalizedPath = normalizeStoredMediaPath(mediaPath, outputFolder);
-
-	if (normalizedPath) {
-		variants.add(normalizedPath);
-		variants.add(normalizedPath.replace(/\\/g, "/"));
-		variants.add(normalizedPath.replace(/\//g, "\\"));
-	}
-
-	if (mediaPath && typeof mediaPath === "string" && path.isAbsolute(mediaPath)) {
-		variants.add(mediaPath);
-	}
-
-	return variants;
-};
-
-const buildStoredMediaPathFromPayload = (processedData) => {
-	if (!processedData || !processedData.mediaName || !processedData.mediaType) {
+const buildMediaPathFromColumns = (mediaType, mediaName) => {
+	if (!mediaType || !mediaName) {
 		return null;
 	}
 
-	return path.join(filterString(processedData.mediaType), processedData.mediaName);
+	return path.join(filterString(mediaType), mediaName);
 };
 
-const normalizeProcessedMessage = (processedData, outputFolder) => {
-	if (!processedData || typeof processedData !== "object") {
-		return { processedData, changed: false };
+const getStoredMediaPathVariants = (mediaPath) => {
+	const variants = new Set();
+	if (!mediaPath) {
+		return variants;
 	}
 
-	const fallbackRelativePath = buildStoredMediaPathFromPayload(processedData);
-	const normalizedMediaPath = normalizeStoredMediaPath(processedData.mediaPath, outputFolder) || fallbackRelativePath;
+	variants.add(mediaPath);
+	variants.add(mediaPath.replace(/\\/g, "/"));
+	variants.add(mediaPath.replace(/\//g, "\\"));
+	return variants;
+};
 
-	if (!normalizedMediaPath || normalizedMediaPath === processedData.mediaPath) {
-		return { processedData, changed: false };
+const getSenderId = (message) => message?.fromId?.userId || message?.peerId?.userId || null;
+
+const extractRecordFromRawMessage = (rawMessage, outputFolder) => {
+	if (!rawMessage || !rawMessage.id) {
+		return null;
 	}
+
+	const hasMedia = !!rawMessage.media;
+	const mediaPath = hasMedia ? getMediaRelativePath(rawMessage) : null;
+	const mediaType = hasMedia ? getMediaType(rawMessage) : null;
 
 	return {
-		processedData: {
-			...processedData,
-			mediaPath: normalizedMediaPath,
-		},
-		changed: true,
+		id: rawMessage.id,
+		date: toTimestamp(rawMessage.date),
+		message_text: rawMessage.message ?? null,
+		is_out: rawMessage.out === undefined ? null : (rawMessage.out ? 1 : 0),
+		sender_id: toSqlInteger(getSenderId(rawMessage)),
+		has_media: hasMedia ? 1 : 0,
+		media_type: mediaType || null,
+		media_path: mediaPath,
+		media_name: mediaPath ? path.basename(mediaPath) : null,
 	};
 };
 
-const migrateStoredMediaPaths = (db, outputFolder) => {
-	let migratedCount = 0;
-	const selectRows = db.prepare("SELECT id, processed_json FROM messages WHERE processed_json IS NOT NULL");
-	const updateRow = db.prepare("UPDATE messages SET processed_json = ? WHERE id = ?");
+const extractRecordFromProcessedMessage = (processedMessage, outputFolder) => {
+	if (!processedMessage || !processedMessage.id) {
+		return null;
+	}
+
+	const normalizedMediaPath = normalizeMediaPath(processedMessage.mediaPath, outputFolder);
+	const fallbackMediaPath = buildMediaPathFromColumns(processedMessage.mediaType, processedMessage.mediaName);
+	const mediaPath = normalizedMediaPath || fallbackMediaPath;
+	const hasMedia = processedMessage.isMedia || !!mediaPath || !!processedMessage.mediaType || !!processedMessage.mediaName;
+
+	return {
+		id: processedMessage.id,
+		date: toTimestamp(processedMessage.date),
+		message_text: processedMessage.message ?? null,
+		is_out: processedMessage.out === undefined ? null : (processedMessage.out ? 1 : 0),
+		sender_id: toSqlInteger(processedMessage.sender),
+		has_media: hasMedia ? 1 : 0,
+		media_type: processedMessage.mediaType || null,
+		media_path: mediaPath,
+		media_name: processedMessage.mediaName || (mediaPath ? path.basename(mediaPath) : null),
+	};
+};
+
+const extractRecordFromLegacyRow = (row, outputFolder) => {
+	const rawMessage = parseJson(row.raw_json);
+	const processedMessage = parseJson(row.processed_json);
+	const rawRecord = extractRecordFromRawMessage(rawMessage, outputFolder) || { id: row.id };
+	const processedRecord = extractRecordFromProcessedMessage(processedMessage, outputFolder) || { id: row.id };
+
+	const merged = {
+		id: row.id,
+		date: processedRecord.date ?? rawRecord.date ?? row.date ?? null,
+		message_text: processedRecord.message_text ?? rawRecord.message_text ?? null,
+		is_out: processedRecord.is_out ?? rawRecord.is_out ?? null,
+		sender_id: processedRecord.sender_id ?? rawRecord.sender_id ?? null,
+		downloaded: row.downloaded ? 1 : 0,
+		has_media: processedRecord.has_media ?? rawRecord.has_media ?? 0,
+		media_type: processedRecord.media_type ?? rawRecord.media_type ?? null,
+		media_path: processedRecord.media_path ?? rawRecord.media_path ?? null,
+		media_name: processedRecord.media_name ?? rawRecord.media_name ?? null,
+	};
+
+	if (!merged.media_path) {
+		merged.media_path = buildMediaPathFromColumns(merged.media_type, merged.media_name);
+	}
+
+	if (!merged.media_name && merged.media_path) {
+		merged.media_name = path.basename(merged.media_path);
+	}
+
+	if (!merged.has_media && (merged.media_type || merged.media_path || merged.media_name)) {
+		merged.has_media = 1;
+	}
+
+	return merged;
+};
+
+const createMessagesTable = (db, tableName = "messages") => {
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS ${tableName} (
+			id INTEGER PRIMARY KEY,
+			date INTEGER,
+			message_text TEXT,
+			is_out INTEGER,
+			sender_id INTEGER,
+			downloaded INTEGER DEFAULT 0,
+			has_media INTEGER DEFAULT 0,
+			media_type TEXT,
+			media_path TEXT,
+			media_name TEXT
+		)
+	`);
+};
+
+const createIndexes = (db) => {
+	db.exec(`
+		CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date);
+		CREATE INDEX IF NOT EXISTS idx_messages_downloaded ON messages(downloaded);
+		CREATE INDEX IF NOT EXISTS idx_messages_media_path ON messages(media_path);
+	`);
+};
+
+const upsertStatements = new Map();
+
+const getUpsertStatement = (db) => {
+	const dbPath = db.name || "";
+	if (upsertStatements.has(dbPath)) {
+		return upsertStatements.get(dbPath);
+	}
+	const stmt = db.prepare(`
+		INSERT INTO messages (
+			id,
+			date,
+			message_text,
+			is_out,
+			sender_id,
+			downloaded,
+			has_media,
+			media_type,
+			media_path,
+			media_name
+		) VALUES (
+			@id,
+			@date,
+			@message_text,
+			@is_out,
+			@sender_id,
+			COALESCE((SELECT downloaded FROM messages WHERE id = @id), 0),
+			@has_media,
+			@media_type,
+			@media_path,
+			@media_name
+		)
+		ON CONFLICT(id) DO UPDATE SET
+			date = COALESCE(excluded.date, messages.date),
+			message_text = COALESCE(excluded.message_text, messages.message_text),
+			is_out = COALESCE(excluded.is_out, messages.is_out),
+			sender_id = COALESCE(excluded.sender_id, messages.sender_id),
+			downloaded = COALESCE(messages.downloaded, 0),
+			has_media = COALESCE(excluded.has_media, messages.has_media),
+			media_type = COALESCE(excluded.media_type, messages.media_type),
+			media_path = COALESCE(excluded.media_path, messages.media_path),
+			media_name = COALESCE(excluded.media_name, messages.media_name)
+	`);
+	upsertStatements.set(dbPath, stmt);
+	return stmt;
+};
+
+const isLegacyJsonSchema = (db) => {
+	const tableInfo = db.prepare("PRAGMA table_info(messages)").all();
+	return tableInfo.some((column) => column.name === "raw_json" || column.name === "processed_json");
+};
+
+const migrateLegacyJsonSchema = (db, outputFolder) => {
+	if (!isLegacyJsonSchema(db)) {
+		return;
+	}
+
+	logMessage().db("[DB] Legacy JSON schema detected, migrating to normalized schema");
+	const legacyRows = db.prepare("SELECT id, date, raw_json, processed_json, downloaded FROM messages ORDER BY id ASC").all();
 
 	const migrate = db.transaction(() => {
-		for (const row of selectRows.iterate()) {
-			try {
-				const processedData = JSON.parse(row.processed_json);
-				const normalized = normalizeProcessedMessage(processedData, outputFolder);
-				if (!normalized.changed) {
-					continue;
-				}
+		createMessagesTable(db, "messages_migrated");
+		const insertMigrated = db.prepare(`
+			INSERT INTO messages_migrated (
+				id,
+				date,
+				message_text,
+				is_out,
+				sender_id,
+				downloaded,
+				has_media,
+				media_type,
+				media_path,
+				media_name
+			) VALUES (
+				@id,
+				@date,
+				@message_text,
+				@is_out,
+				@sender_id,
+				@downloaded,
+				@has_media,
+				@media_type,
+				@media_path,
+				@media_name
+			)
+		`);
 
-				updateRow.run(JSON.stringify(normalized.processedData), row.id);
-				migratedCount++;
-			} catch (e) {
-				// Пропускаем записи с битым JSON, не мешая запуску приложения.
-			}
+		for (const row of legacyRows) {
+			insertMigrated.run(extractRecordFromLegacyRow(row, outputFolder));
 		}
+
+		db.exec("DROP TABLE messages");
+		db.exec("ALTER TABLE messages_migrated RENAME TO messages");
 	});
 
 	migrate();
-	if (migratedCount > 0) {
-		logMessage().db(`[DB] Migrated ${migratedCount} stored media paths to relative format`);
-	}
+	createIndexes(db);
+	logMessage().db(`[DB] Legacy JSON schema migrated: ${legacyRows.length} rows`);
 };
 
-/**
- * Инициализирует базу данных SQLite для указанного канала
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @returns {Database.Database} Объект базы данных
- */
+const ensureSchema = (db, outputFolder) => {
+	createMessagesTable(db);
+	migrateLegacyJsonSchema(db, outputFolder);
+	createMessagesTable(db);
+	createIndexes(db);
+};
+
 const initDatabase = (channelId, outputFolder) => {
 	const dbPath = getDbPath(outputFolder);
-	
+
 	logMessage().db(`[DB] initDatabase: channelId=${channelId}, dbPath=${dbPath}`);
-	
-	// Проверяем, есть ли уже открытое соединение
+
 	if (dbConnections.has(dbPath)) {
 		logMessage().db(`[DB] Reusing existing connection for ${dbPath}`);
 		return dbConnections.get(dbPath);
 	}
-	
-	// Создаем директорию, если не существует
+
 	if (!fs.existsSync(outputFolder)) {
 		logMessage().db(`[DB] Creating output directory: ${outputFolder}`);
 		fs.mkdirSync(outputFolder, { recursive: true });
 	}
-	
-	// Открываем/создаем базу данных
+
 	const startTime = Date.now();
 	const db = new Database(dbPath);
 	const initTime = Date.now() - startTime;
 	logMessage().db(`[DB] Database opened in ${initTime}ms: ${dbPath}`);
-	
-	// Включаем WAL режим для лучшей производительности
-	logMessage().db(`[DB] Setting PRAGMA journal_mode=WAL`);
-	db.pragma("journal_mode = WAL");
-	
-	// Создаем таблицу, если не существует
-	logMessage().db(`[DB] Creating tables if not exist`);
-	db.exec(`
-		CREATE TABLE IF NOT EXISTS messages (
-			id INTEGER NOT NULL,
-			date INTEGER,
-			raw_json TEXT,
-			processed_json TEXT,
-			downloaded INTEGER DEFAULT 0,
-			PRIMARY KEY (id)
-		)
-	`);
-	
-	// Миграция: добавляем колонку downloaded, если её нет (для старых баз)
-	try {
-		const tableInfo = db.prepare("PRAGMA table_info(messages)").all();
-		const hasDownloadedColumn = tableInfo.some(col => col.name === 'downloaded');
-		if (!hasDownloadedColumn) {
-			logMessage().db(`[DB] Migration: adding 'downloaded' column`);
-			db.exec("ALTER TABLE messages ADD COLUMN downloaded INTEGER DEFAULT 0");
-		} else {
-			logMessage().db(`[DB] Migration check: 'downloaded' column exists`);
-		}
-	} catch (e) {
-		logMessage().db(`[DB] Migration check skipped or column exists: ${e.message}`);
-	}
-	
-	// Создаем индекс для быстрой сортировки по дате
-	logMessage().db(`[DB] Creating indexes if not exist`);
-	db.exec(`
-		CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)
-	`);
 
-	migrateStoredMediaPaths(db, outputFolder);
-	
-	// Сохраняем соединение в кэш
+	db.pragma("journal_mode = WAL");
+	db.pragma("busy_timeout = 30000");
+	ensureSchema(db, outputFolder);
+
 	dbConnections.set(dbPath, db);
 	logMessage().db(`[DB] Connection cached. Total connections: ${dbConnections.size}`);
-	
 	return db;
 };
 
-/**
- * Получает объект базы данных для указанного канала
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @returns {Database.Database|null} Объект базы данных или null
- */
 const getDatabase = (channelId, outputFolder) => {
 	const dbPath = getDbPath(outputFolder);
 	const db = dbConnections.get(dbPath) || null;
@@ -210,191 +370,173 @@ const getDatabase = (channelId, outputFolder) => {
 	return db;
 };
 
-/**
- * Сохраняет пачку сообщений в базу данных
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @param {Array} rawMessages - Массив сырых сообщений от Telegram API
- * @param {Array} processedMessages - Массив обработанных сообщений (упрощенный формат)
- */
 const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) => {
 	const startTime = Date.now();
 	const db = initDatabase(channelId, outputFolder);
-	
+	const upsert = getUpsertStatement(db);
+
 	logMessage().db(`[DB] saveMessages: channelId=${channelId}, rawCount=${rawMessages.length}, processedCount=${processedMessages.length}`);
-	
-	// Используем INSERT ... ON CONFLICT DO UPDATE, чтобы не затирать статус downloaded
-	const insertRaw = db.prepare(`
-		INSERT INTO messages (id, date, raw_json, processed_json, downloaded)
-		VALUES (?, ?, ?, ?, (SELECT downloaded FROM messages WHERE id = ?))
-		ON CONFLICT(id) DO UPDATE SET
-			date = excluded.date,
-			raw_json = excluded.raw_json,
-			processed_json = excluded.processed_json,
-			downloaded = COALESCE((SELECT downloaded FROM messages WHERE id = excluded.id), 0)
-	`);
-	
-	let insertedCount = 0;
-	let updatedCount = 0;
-	
-	const insertMany = db.transaction((raw, processed) => {
-		// Создаем Map для быстрого поиска обработанных сообщений по ID
-		const processedMap = new Map();
-		processed.forEach(msg => {
-			if (msg && msg.id) {
-				processedMap.set(msg.id, msg);
-			}
-		});
-		
-		for (const rawMsg of raw) {
-			if (!rawMsg || !rawMsg.id) continue;
-			
-			const processedMsg = processedMap.get(rawMsg.id);
-			const dateTimestamp = rawMsg.date ? new Date(rawMsg.date).getTime() : null;
-			
-			const result = insertRaw.run(
-				rawMsg.id,
-				dateTimestamp,
-				JSON.stringify(rawMsg),
-				processedMsg ? JSON.stringify(processedMsg) : null,
-				rawMsg.id // Для SELECT downloaded FROM messages WHERE id = ?
-			);
-			
-			// SQLite returns changes > 0 if a new row was inserted or updated
-			if (result.changes > 0) {
-				// Check if it was actually an insert or update
-				// This is approximate since ON CONFLICT always results in changes=1 on conflict
-				insertedCount++;
-			}
+
+	let savedCount = 0;
+	const insertMany = db.transaction((rawBatch, processedBatch) => {
+		for (const rawMessage of rawBatch) {
+			const record = extractRecordFromRawMessage(rawMessage, outputFolder);
+			if (!record) continue;
+			upsert.run(record);
+			savedCount++;
+		}
+
+		for (const processedMessage of processedBatch) {
+			const record = extractRecordFromProcessedMessage(processedMessage, outputFolder);
+			if (!record) continue;
+			upsert.run(record);
+			savedCount++;
 		}
 	});
-	
+
 	insertMany(rawMessages, processedMessages);
 	const elapsed = Date.now() - startTime;
-	
-	logMessage().db(`[DB] saveMessages complete: inserted/updated=${insertedCount}, time=${elapsed}ms`);
+	logMessage().db(`[DB] saveMessages complete: saved=${savedCount}, time=${elapsed}ms`);
 };
 
-/**
- * Проверяет, существует ли сообщение с указанным ID
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @param {number} messageId - ID сообщения
- * @returns {boolean}
- */
 const messageExists = (channelId, outputFolder, messageId) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
 		logMessage().db(`[DB] messageExists: channelId=${channelId}, msgId=${messageId}, result=NULL_DB`);
 		return false;
 	}
-	
+
 	const startTime = Date.now();
 	const result = db.prepare("SELECT 1 FROM messages WHERE id = ?").get(messageId);
 	const elapsed = Date.now() - startTime;
 	const exists = !!result;
-	
+
 	logMessage().db(`[DB] messageExists: msgId=${messageId}, exists=${exists}, time=${elapsed}ms`);
 	return exists;
 };
 
-/**
- * Получает количество сообщений в базе данных
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @returns {number}
- */
 const getMessageCount = (channelId, outputFolder) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) return 0;
-	
+
 	const startTime = Date.now();
 	const result = db.prepare("SELECT COUNT(*) as count FROM messages").get();
 	const elapsed = Date.now() - startTime;
 	const count = result ? result.count : 0;
-	
+
 	logMessage().db(`[DB] getMessageCount: channelId=${channelId}, count=${count}, time=${elapsed}ms`);
 	return count;
 };
 
-/**
- * Получает все сообщения для экспорта в старом формате
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @param {string} type - Тип экспорта: 'raw', 'processed', или 'all'
- * @yields {Object} Объект сообщения
- */
+const buildProcessedExportObject = (row) => {
+	const processed = {
+		id: row.id,
+		message: row.message_text,
+		date: row.date ? new Date(row.date).toISOString() : null,
+		out: row.is_out === null || row.is_out === undefined ? undefined : row.is_out === 1,
+		sender: row.sender_id,
+	};
+
+	if (row.has_media) {
+		processed.mediaType = row.media_type || null;
+		processed.mediaPath = row.media_path || buildMediaPathFromColumns(row.media_type, row.media_name);
+		processed.mediaName = row.media_name || (processed.mediaPath ? path.basename(processed.mediaPath) : null);
+		processed.isMedia = true;
+	}
+
+	return processed;
+};
+
+const buildRawExportObject = (row) => {
+	const raw = {
+		id: row.id,
+		message: row.message_text,
+		date: row.date ? new Date(row.date).toISOString() : null,
+		out: row.is_out === null || row.is_out === undefined ? undefined : row.is_out === 1,
+	};
+
+	if (row.sender_id !== null && row.sender_id !== undefined) {
+		raw.fromId = { userId: row.sender_id };
+	}
+
+	if (row.has_media) {
+		raw.media = {
+			type: row.media_type || null,
+			path: row.media_path || buildMediaPathFromColumns(row.media_type, row.media_name),
+			name: row.media_name || null,
+		};
+	}
+
+	return raw;
+};
+
 function* getMessagesForExport(channelId, outputFolder, type = "all") {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
 		logMessage().db(`[DB] getMessagesForExport: channelId=${channelId}, type=${type}, result=NULL_DB`);
 		return;
 	}
-	
-	const query = type === "raw" 
-		? "SELECT id, date, raw_json FROM messages ORDER BY id ASC"
-		: type === "processed"
-			? "SELECT id, date, processed_json FROM messages ORDER BY id ASC"
-			: "SELECT id, date, raw_json, processed_json FROM messages ORDER BY id ASC";
-	
+
 	logMessage().db(`[DB] getMessagesForExport: channelId=${channelId}, type=${type}, query started`);
-	const stmt = db.prepare(query);
-	
+	const stmt = db.prepare(`
+		SELECT
+			id,
+			date,
+			message_text,
+			is_out,
+			sender_id,
+			has_media,
+			media_type,
+			media_path,
+			media_name
+		FROM messages
+		ORDER BY id ASC
+	`);
+
 	let count = 0;
 	for (const row of stmt.iterate()) {
-		yield row;
+		yield {
+			id: row.id,
+			date: row.date,
+			raw_json: type === "processed" ? null : JSON.stringify(buildRawExportObject(row)),
+			processed_json: type === "raw" ? null : JSON.stringify(buildProcessedExportObject(row)),
+		};
 		count++;
 	}
+
 	logMessage().db(`[DB] getMessagesForExport: yielded ${count} rows`);
 }
 
-/**
- * Экспортирует данные из SQLite обратно в JSON Lines формат
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- */
 const exportToJsonFiles = (channelId, outputFolder) => {
 	const rawFilePath = getRawMessagesPath(outputFolder);
 	const processedFilePath = getProcessedMessagesPath(outputFolder);
-	
+
 	logMessage().db(`[DB] exportToJsonFiles: channelId=${channelId}`);
-	
-	// Очищаем существующие файлы
+
 	if (fs.existsSync(rawFilePath)) {
-		logMessage().db(`[DB] Deleting existing raw file: ${rawFilePath}`);
 		fs.unlinkSync(rawFilePath);
 	}
 	if (fs.existsSync(processedFilePath)) {
-		logMessage().db(`[DB] Deleting existing processed file: ${processedFilePath}`);
 		fs.unlinkSync(processedFilePath);
 	}
-	
+
 	let count = 0;
 	const startTime = Date.now();
-	
 	for (const row of getMessagesForExport(channelId, outputFolder, "all")) {
-		// Экспортируем raw_json
 		if (row.raw_json) {
 			fs.appendFileSync(rawFilePath, row.raw_json + "\n");
 		}
-		
-		// Экспортируем processed_json
 		if (row.processed_json) {
 			fs.appendFileSync(processedFilePath, row.processed_json + "\n");
 		}
-		
 		count++;
 	}
-	
+
 	const elapsed = Date.now() - startTime;
 	logMessage().db(`[DB] exportToJsonFiles: exported ${count} rows in ${elapsed}ms`);
-	
 	return count;
 };
 
-/**
- * Закрывает все открытые соединения с базой данных
- */
 const closeAllConnections = () => {
 	logMessage().db(`[DB] closeAllConnections: closing ${dbConnections.size} connections`);
 	for (const [dbPath, db] of dbConnections) {
@@ -406,19 +548,15 @@ const closeAllConnections = () => {
 		}
 	}
 	dbConnections.clear();
-	logMessage().db(`[DB] All connections closed`);
+	logMessage().db("[DB] All connections closed");
 };
 
-/**
- * Закрывает соединение с базой данных для указанного канала
- * @param {string} outputFolder - Путь к папке экспорта
- */
 const closeDatabase = (outputFolder) => {
 	const channelId = path.basename(outputFolder);
 	const dbPath = getDbPath(outputFolder);
-	
+
 	logMessage().db(`[DB] closeDatabase: channelId=${channelId}, path=${outputFolder}`);
-	
+
 	if (dbConnections.has(dbPath)) {
 		try {
 			dbConnections.get(dbPath).close();
@@ -427,31 +565,21 @@ const closeDatabase = (outputFolder) => {
 		} catch (e) {
 			logMessage().error(`[DB] Error closing database ${dbPath}: ${e.message}`);
 		}
-	} else {
-		logMessage().db(`[DB] No connection found for: ${dbPath}`);
 	}
 };
 
-/**
- * Устанавливает флаг downloaded для сообщения
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @param {number} messageId - ID сообщения
- * @param {number} status - Статус загрузки (1 = скачано, 0 = не скачано)
- */
 const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
 		logMessage().db(`[DB] setFileDownloaded: channelId=${channelId}, msgId=${messageId}, status=${status}, result=NULL_DB`);
 		return false;
 	}
-	
+
 	const startTime = Date.now();
 	try {
 		const result = db.prepare("UPDATE messages SET downloaded = ? WHERE id = ?").run(status, messageId);
 		const elapsed = Date.now() - startTime;
 		const changes = result ? result.changes : 0;
-		
 		logMessage().db(`[DB] setFileDownloaded: msgId=${messageId}, status=${status}, changes=${changes}, time=${elapsed}ms`);
 		return changes > 0;
 	} catch (e) {
@@ -460,76 +588,89 @@ const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
 	}
 };
 
-/**
- * Проверяет, отмечен ли файл как скачанный в базе данных
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @param {number} messageId - ID сообщения
- * @returns {boolean}
- */
 const isFileDownloaded = (channelId, outputFolder, messageId) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
 		logMessage().db(`[DB] isFileDownloaded: channelId=${channelId}, msgId=${messageId}, result=NULL_DB`);
 		return false;
 	}
-	
+
 	const startTime = Date.now();
 	const result = db.prepare("SELECT downloaded FROM messages WHERE id = ?").get(messageId);
 	const elapsed = Date.now() - startTime;
 	const downloaded = result ? result.downloaded === 1 : false;
-	
+
 	logMessage().db(`[DB] isFileDownloaded: msgId=${messageId}, downloaded=${downloaded}, time=${elapsed}ms`);
 	return downloaded;
 };
 
-/**
- * Синхронизирует статус downloaded для всех сообщений с медиа на основе снапшотов
- * Помечает файлы из снапшотов как скачанные
- * @param {string} channelId - ID канала
- * @param {string} outputFolder - Путь к папке экспорта
- * @param {Set<string>} snapshotFiles - Множество относительных путей файлов из снапшотов
- * @returns {number} Количество обновленных записей
- */
 const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
 		logMessage().db(`[DB] syncDownloadedFromSnapshots: channelId=${channelId}, snapshots=${snapshotFiles.size}, result=NULL_DB`);
 		return 0;
 	}
-	
+
 	logMessage().db(`[DB] syncDownloadedFromSnapshots: channelId=${channelId}, snapshotCount=${snapshotFiles.size}`);
-	
+
 	let updatedCount = 0;
 	let processedCount = 0;
-	
 	const startTime = Date.now();
+	const updateStmt = db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?");
+	const selectStmt = db.prepare("SELECT id, media_path, media_type, media_name FROM messages WHERE downloaded = 0 AND has_media = 1");
+	const rows = selectStmt.all();
 	const updateMany = db.transaction(() => {
-		for (const row of db.prepare("SELECT id, processed_json FROM messages WHERE downloaded = 0").iterate()) {
+		for (const row of rows) {
 			processedCount++;
-			try {
-				const processedData = row.processed_json ? JSON.parse(row.processed_json) : null;
-				const normalized = normalizeProcessedMessage(processedData, outputFolder);
-				const mediaPath = normalized.processedData ? normalized.processedData.mediaPath : null;
-				const mediaPathVariants = mediaPath
-					? getStoredMediaPathVariants(mediaPath, outputFolder)
-					: new Set();
-				const foundInSnapshots = [...mediaPathVariants].some((storedPath) => snapshotFiles.has(storedPath));
-				if (foundInSnapshots) {
-					db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?").run(row.id);
-					updatedCount++;
-				}
-			} catch (e) {
-				// Пропускаем сообщения с ошибками парсинга
+			const storedMediaPath = row.media_path || buildMediaPathFromColumns(row.media_type, row.media_name);
+			const mediaPathVariants = getStoredMediaPathVariants(storedMediaPath);
+			const foundInSnapshots = [...mediaPathVariants].some((storedPath) => snapshotFiles.has(storedPath));
+			if (foundInSnapshots) {
+				db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?").run(row.id);
+				updatedCount++;
 			}
 		}
 	});
-	
+
 	updateMany();
 	const elapsed = Date.now() - startTime;
-	
 	logMessage().db(`[DB] syncDownloadedFromSnapshots: processed=${processedCount} rows, updated=${updatedCount}, time=${elapsed}ms`);
 	return updatedCount;
+};
+
+const getDownloadedSet = (channelId, outputFolder) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) return new Set();
+
+	let rows;
+	try {
+		rows = db.prepare("SELECT id FROM messages WHERE downloaded = 1").all();
+	} catch (e) {
+		logMessage().error(`[DB] getDownloadedSet failed: ${e.message}`);
+		return new Set();
+	}
+	return new Set(rows.map((r) => r.id));
+};
+
+const getMediaPathMap = (channelId, outputFolder) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) return new Map();
+
+	const map = new Map();
+	try {
+		for (const row of db.prepare("SELECT id, media_path, media_type, media_name FROM messages WHERE has_media = 1 AND downloaded = 0").iterate()) {
+			const mediaPath = row.media_path || buildMediaPathFromColumns(row.media_type, row.media_name);
+			if (mediaPath) {
+				const variants = getStoredMediaPathVariants(mediaPath);
+				for (const v of variants) {
+					map.set(v, row.id);
+				}
+			}
+		}
+	} catch (e) {
+		logMessage().error(`[DB] getMediaPathMap failed: ${e.message}`);
+	}
+	return map;
 };
 
 module.exports = {
@@ -545,4 +686,6 @@ module.exports = {
 	setFileDownloaded,
 	isFileDownloaded,
 	syncDownloadedFromSnapshots,
+	getDownloadedSet,
+	getMediaPathMap,
 };
