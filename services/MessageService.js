@@ -6,6 +6,7 @@ const {
     getMediaType,
     getMediaPath,
     getMediaRelativePath,
+    getExpectedMediaSize,
     buildFileName,
     filterString,
     logMessage,
@@ -64,14 +65,14 @@ class MessageService {
         db.initDatabase(channelId, outputFolder);
         initDownloadState(channelId, outputFolder);
 
-        const snapshotFiles = loadSnapshots(outputFolder);
-        if (snapshotFiles.size > 0) {
-            const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
-            if (syncedCount > 0) {
-                logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
-                initDownloadState(channelId, outputFolder);
-            }
-        }
+		const snapshotFiles = loadSnapshots(outputFolder);
+		if (snapshotFiles.size > 0) {
+			const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
+			if (syncedCount > 0) {
+				logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
+				initDownloadState(channelId, outputFolder);
+			}
+		}
 
         let offsetId = 0;
         let totalFetched = 0;
@@ -183,15 +184,15 @@ class MessageService {
         db.initDatabase(channelId, outputFolder);
         initDownloadState(channelId, outputFolder);
 
-        if (includeSnapshots) {
-            const snapshotFiles = loadSnapshots(outputFolder);
-            if (snapshotFiles.size > 0) {
-                const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
-                if (syncedCount > 0) {
-                    logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
-                }
-            }
-        }
+		if (includeSnapshots) {
+			const snapshotFiles = loadSnapshots(outputFolder);
+			if (snapshotFiles.size > 0) {
+				const syncedCount = db.syncDownloadedFromSnapshots(channelId, outputFolder, snapshotFiles);
+				if (syncedCount > 0) {
+					logMessage.info(`Synced ${syncedCount} existing files from snapshots as downloaded`);
+				}
+			}
+		}
 
         let offsetId = 0;
         let totalFetched = 0;
@@ -276,6 +277,7 @@ class MessageService {
             obj.mediaType = message.media ? getMediaType(message) : null;
             obj.mediaPath = getMediaRelativePath(message);
             obj.mediaName = fileName;
+            obj.expectedSize = getExpectedMediaSize(message);
             obj.isMedia = true;
         }
 

@@ -5,23 +5,49 @@ const paths = require("../utils/paths");
 const config = require("../utils/config");
 const {
     getMediaType,
+    getExpectedMediaSize,
     getMediaPath,
-    buildFileName,
-    filterString,
     checkFileExist,
     addFileToCheckCache,
     clearFileCheckCache,
     fileCheckCache,
     logMessage,
-    wait,
-    loadSnapshots,
     downloadState,
     initDownloadState
 } = require("../utils/helper");
 const { createFloodState } = require("./FloodControl");
 const { ProgressLogger } = require("./ProgressLogger");
 const { TelegramEntityResolver } = require("./TelegramEntityResolver");
-const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
+const { ValidationService } = require("./ValidationService");
+
+const DEFAULT_DOWNLOAD_RETRY_ATTEMPTS = 3;
+const DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS = 2;
+const LARGE_FILE_RETRY_THRESHOLD_BYTES = 128 * 1024 * 1024;
+
+function isRetryableValidationError(error = "") {
+    const normalized = String(error || "").toLowerCase();
+    return normalized.includes("size mismatch") ||
+        normalized.includes("sample decode failed") ||
+        normalized.includes("invalid nal unit size") ||
+        normalized.includes("missing picture in access unit") ||
+        normalized.includes("corrupt input packet") ||
+        normalized.includes("ffprobe exit code") ||
+        normalized.includes("no duration found") ||
+        normalized.includes("invalid duration");
+}
+
+function shouldRetryDownload(validationError, expectedSize, observedSize = null) {
+    if (!isRetryableValidationError(validationError)) {
+        return false;
+    }
+
+    if (String(validationError || "").toLowerCase().includes("size mismatch")) {
+        return true;
+    }
+
+    return (Number.isFinite(expectedSize) && expectedSize >= LARGE_FILE_RETRY_THRESHOLD_BYTES) ||
+        (Number.isFinite(observedSize) && observedSize >= LARGE_FILE_RETRY_THRESHOLD_BYTES);
+}
 
 /**
  * Сервис для управления загрузкой файлов
@@ -34,12 +60,59 @@ class DownloadManager {
         logMessage.dl(`[DL] DownloadManager created, client type: ${typeof client}`);
     }
 
+    removeFileIfExists(filePath, contextLabel = "file") {
+        if (!filePath || !fs.existsSync(filePath)) {
+            return;
+        }
+
+        try {
+            fs.unlinkSync(filePath);
+            logMessage.dl(`[DL] Removed ${contextLabel}: ${filePath}`);
+        } catch (error) {
+            logMessage.error(`[DL] Failed to remove ${contextLabel} ${filePath}: ${error.message}`);
+        }
+    }
+
+    async performSingleDownloadAttempt(message, downloadTargetPath, finalValidationPath, floodState, msgId) {
+        let fileSize = 0;
+
+        this.removeFileIfExists(downloadTargetPath, "stale partial");
+
+        logMessage.dl(`[DL] Starting Telegram download: msgId=${msgId}`);
+        await floodState.runWithFloodControl(`downloadMedia-msg${msgId}`, async () => {
+            return this.client.downloadMedia(message, {
+                outputFile: downloadTargetPath,
+                progressCallback: (downloaded, total) => {
+                    fileSize = downloaded;
+                    const name = path.basename(finalValidationPath);
+                    if (total === downloaded) {
+                        logMessage.dl(`[DL] Download complete: msgId=${msgId}, file=${name}, size=${fileSize}`);
+                    }
+                },
+            });
+        });
+
+        if (fs.existsSync(downloadTargetPath)) {
+            fileSize = fs.statSync(downloadTargetPath).size;
+            logMessage.dl(`[DL] File size from fs: msgId=${msgId}, size=${fileSize}`);
+        }
+
+        return fileSize;
+    }
+
     /**
      * Скачать медиа из сообщения
      */
     async downloadMedia(message, mediaPath, floodState, channelId, outputFolder) {
         const msgId = message?.id;
         const mediaType = message?.media ? getMediaType(message) : "none";
+        const expectedSize = getExpectedMediaSize(message);
+        const validationService = new ValidationService({
+            channelId,
+            outputFolder,
+            ffmpegPaths: this.ffmpegPaths,
+        });
+        let partialPath = null;
         
         logMessage.dl(`[DL] downloadMedia: msgId=${msgId}, type=${mediaType}, path=${mediaPath}`);
         
@@ -60,6 +133,13 @@ class DownloadManager {
                 mediaPath = path.join(mediaPath, `../${message?.media?.webpage?.id}_image.jpeg`);
             }
 
+            const finalValidationPath = mediaPath;
+            partialPath = validationService.getPartialPath(finalValidationPath);
+            const downloadTargetPath = partialPath;
+            paths.ensureDir(path.dirname(downloadTargetPath));
+            this.removeFileIfExists(downloadTargetPath, "stale partial");
+            this.removeFileIfExists(finalValidationPath, "stale target");
+
             // Обработка poll
             if (message.media.poll) {
                 let pollPath = path.join(mediaPath, `../${message.id}_poll.json`);
@@ -68,38 +148,86 @@ class DownloadManager {
                 fs.writeFileSync(pollPath, circularStringify(message.media.poll, null, 2));
             }
 
-            let fileSize = 0;
-            
-            logMessage.dl(`[DL] Starting Telegram download: msgId=${msgId}`);
-            await floodState.runWithFloodControl(`downloadMedia-msg${msgId}`, async () => {
-                return this.client.downloadMedia(message, {
-                    outputFile: mediaPath,
-                    progressCallback: (downloaded, total) => {
-                        fileSize = downloaded;
-                        const name = path.basename(mediaPath);
-                        if (total == downloaded) {
-                            logMessage.dl(`[DL] Download complete: msgId=${msgId}, file=${name}, size=${fileSize}`);
-                        }
-                    },
-                });
-            });
+            const maxAttempts = Math.max(1, config.get("download.maxValidationRetries", DEFAULT_DOWNLOAD_RETRY_ATTEMPTS));
+            const retryDelaySeconds = Math.max(0, config.get("download.retryDelaySeconds", DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS));
 
-            // Если fileSize не обновился, получаем размер файла из файловой системы
-            if (fileSize === 0 && fs.existsSync(mediaPath)) {
-                fileSize = fs.statSync(mediaPath).size;
-                logMessage.dl(`[DL] File size from fs: msgId=${msgId}, size=${fileSize}`);
+            let fileSize = 0;
+            let validationResult = null;
+            let lastValidationError = null;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                fileSize = await this.performSingleDownloadAttempt(message, downloadTargetPath, finalValidationPath, floodState, msgId);
+                validationResult = await validationService.validateMediaFile(downloadTargetPath, mediaType, {
+                    deepValidation: this.deepValidation,
+                    expectedSize,
+                });
+
+                if (validationResult.valid) {
+                    break;
+                }
+
+                lastValidationError = validationResult.error;
+                this.removeFileIfExists(downloadTargetPath, "invalid partial");
+
+                if (attempt >= maxAttempts || !shouldRetryDownload(validationResult.error, expectedSize, fileSize)) {
+                    break;
+                }
+
+                logMessage.warn(
+                    `[DL] Retrying download for msgId=${msgId} after validation failure ` +
+                    `(${attempt}/${maxAttempts}): ${validationResult.error}`
+                );
+
+                if (retryDelaySeconds > 0) {
+                    await floodState.waitFn(retryDelaySeconds);
+                }
             }
+
+            if (!validationResult?.valid) {
+                this.removeFileIfExists(downloadTargetPath, "invalid partial");
+                this.removeFileIfExists(finalValidationPath, "invalid target");
+
+                if (channelId && outputFolder) {
+                    db.setFileDownloaded(channelId, outputFolder, message.id, 0);
+                    db.setValidationState(channelId, outputFolder, message.id, {
+                        status: "failed",
+                        profile: validationResult?.profile || "none",
+                        error: lastValidationError || validationResult?.error || "download validation failed",
+                    });
+                }
+
+                fileCheckCache.delete(finalValidationPath);
+                return {
+                    success: false,
+                    fileSize: 0,
+                    validationError: lastValidationError || validationResult?.error || "download validation failed",
+                };
+            }
+
+            fileSize = validationService.finalizeValidatedDownload(downloadTargetPath, finalValidationPath);
 
             // Отмечаем файл как скачанный в БД
             if (channelId && outputFolder) {
                 db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+                db.setValidationState(channelId, outputFolder, message.id, {
+                    status: "verified",
+                    profile: validationResult.profile,
+                    error: null,
+                });
                 downloadState.markDownloaded(message.id);
                 logMessage.dl(`[DL] Marked downloaded in DB: msgId=${msgId}, channelId=${channelId}`);
             }
 
-            return { success: true, fileSize };
+            return { success: true, fileSize, validationProfile: validationResult.profile };
         } catch (err) {
             logMessage.error(`[DL] Error in downloadMedia: msgId=${msgId}, error=${err?.message || String(err)}`);
+            if (fs.existsSync(partialPath)) {
+                try {
+                    fs.unlinkSync(partialPath);
+                } catch (cleanupError) {
+                    logMessage.error(`[DL] Failed to remove partial file ${partialPath}: ${cleanupError.message}`);
+                }
+            }
             return { success: false, fileSize: 0 };
         }
     }
@@ -107,47 +235,44 @@ class DownloadManager {
     /**
      * Проверить файл на валидность
      */
-    async validateMediaFile(mediaPath, mediaType, ffmpegPaths, deepValidation) {
-        if (!ffmpegPaths) {
-            logMessage.valid(`[VALID] No ffmpeg paths, skipping validation: ${mediaPath}`);
-            return true;
-        }
-        
+    async validateMediaFile(mediaPath, mediaType, ffmpegPaths, deepValidation, expectedSize = null) {
         try {
-            const fileType = mediaType.toLowerCase().includes("video") ? "video" : "image";
-            logMessage.valid(`[VALID] Starting validation: file=${path.basename(mediaPath)}, type=${fileType}, deep=${deepValidation}`);
-            
+            const validationService = new ValidationService({ ffmpegPaths });
             const validationStart = Date.now();
-            const validationResult = await validateFile(
-                mediaPath,
-                fileType,
-                ffmpegPaths.ffmpeg,
-                ffmpegPaths.ffprobe,
-                deepValidation
-            );
+            const validationResult = await validationService.validateMediaFile(mediaPath, mediaType, { deepValidation, expectedSize });
             const validationMs = Date.now() - validationStart;
             
             if (validationResult.valid) {
-                logMessage.valid(`[VALID] Valid: ${path.basename(mediaPath)} (${validationMs}ms)`);
+                logMessage.valid(`[VALID] Valid: ${path.basename(mediaPath)} (${validationMs}ms, profile=${validationResult.profile})`);
             } else {
-                logMessage.valid(`[VALID] Invalid: ${path.basename(mediaPath)} - ${validationResult.error} (${validationMs}ms)`);
+                logMessage.valid(`[VALID] Invalid: ${path.basename(mediaPath)} - ${validationResult.error} (${validationMs}ms, profile=${validationResult.profile})`);
             }
             
             return validationResult;
         } catch (err) {
             logMessage.error(`[VALID] Error validating file ${mediaPath}: ${err.message}`);
-            return { valid: true }; // На всякий случай считаем файл валидным
+            return { valid: false, error: err.message };
         }
     }
 
     /**
      * Удалить невалидный файл
      */
-    deleteInvalidFile(mediaPath) {
-        logMessage.valid(`[VALID] Deleting invalid file: ${mediaPath}`);
+    async deleteInvalidFile(mediaPath) {
         try {
+            const validationService = new ValidationService({ channelId: this.channelId, outputFolder: this.outputFolder, ffmpegPaths: this.ffmpegPaths });
             if (fs.existsSync(mediaPath)) {
-                fs.unlinkSync(mediaPath);
+                if (config.get("download.quarantineInvalidFiles", true)) {
+                    const quarantineResult = await validationService.quarantineFile(mediaPath, "existing file validation failed", {
+                        channelId: this.channelId,
+                        originalTargetPath: mediaPath,
+                    });
+                    if (!quarantineResult?.ok) {
+                        return false;
+                    }
+                } else {
+                    fs.unlinkSync(mediaPath);
+                }
             }
             fileCheckCache.delete(mediaPath);
             return true;
@@ -169,6 +294,11 @@ class DownloadManager {
             floodState,
             downloadableFiles
         } = context;
+
+        this.channelId = channelId;
+        this.outputFolder = outputFolder;
+        this.ffmpegPaths = ffmpegPaths;
+        this.deepValidation = deepValidation;
 
         logMessage.dl(`[DL] processMessageBatch: channelId=${channelId}, messageCount=${messages.length}`);
         
@@ -225,9 +355,9 @@ class DownloadManager {
                     checkedFiles++;
 
                     if (fileExist) {
-                        // Collect files that need validation
-                        // Skip files from snapshots - they are already verified
-                        if (ffmpegPaths && !message._fromSnapshot) {
+                        // Validate only files that physically exist on disk.
+                        // Snapshot entries may represent intentionally removed files.
+                        if (ffmpegPaths && !message._fromSnapshot && fs.existsSync(mediaPath)) {
                             filesToValidate.push({
                                 message,
                                 mediaPath,
@@ -265,30 +395,42 @@ class DownloadManager {
         
         // Parallel validation for existing files
         if (filesToValidate.length > 0 && ffmpegPaths) {
-            const { validateFiles } = require("../validators");
             const ffmpegBin = ffmpegPaths.ffmpeg;
             const ffprobeBin = ffmpegPaths.ffprobe;
             const maxParallelValidation = Math.min(10, floodState.getParallelLimit());
+            const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths });
             
             logMessage.valid(`[VALID] Starting parallel validation: count=${filesToValidate.length}, maxParallel=${maxParallelValidation}`);
-            
-            // Prepare files array with path and type for validateFiles
-            const filesForValidation = filesToValidate.map(f => ({
-                path: f.mediaPath,
-                type: f.mediaType.toLowerCase().includes("video") ? "video" : "image"
-            }));
-            
+
             const validationStart = Date.now();
-            const validationResults = await validateFiles(
-                filesForValidation,
-                { ffmpeg: ffmpegBin, ffprobe: ffprobeBin },
-                (file, result) => {
-                    logMessage.valid(`[VALID] Result: ${path.basename(file.path)} = ${result.valid ? 'valid' : 'invalid'}: ${result.error || ''}`);
-                },
-                maxParallelValidation,
-                deepValidation
-            );
+            const validationResults = { errors: [] };
+            let fileIndex = 0;
+            const worker = async () => {
+                while (fileIndex < filesToValidate.length) {
+                    const currentIndex = fileIndex++;
+                    if (currentIndex >= filesToValidate.length) {
+                        break;
+                    }
+
+                    const fileInfo = filesToValidate[currentIndex];
+                    const result = await validationService.validateMediaFile(fileInfo.mediaPath, fileInfo.mediaType, {
+                        deepValidation,
+                        expectedSize: getExpectedMediaSize(fileInfo.message),
+                    });
+                    logMessage.valid(`[VALID] Result: ${path.basename(fileInfo.mediaPath)} = ${result.valid ? 'valid' : 'invalid'}: ${result.error || ''}`);
+                    validationCount++;
+                    if (!result.valid) {
+                        validationResults.errors.push({ path: fileInfo.mediaPath, error: result.error });
+                    }
+                }
+            };
+            const workers = [];
+            for (let i = 0; i < Math.min(maxParallelValidation, filesToValidate.length); i++) {
+                workers.push(worker());
+            }
+            await Promise.all(workers);
             const validationElapsed = Date.now() - validationStart;
+            validationTotalMs += validationElapsed;
             logMessage.valid(`[VALID] Parallel validation complete: ${validationResults.errors.length} invalid, time=${validationElapsed}ms`);
             
             // Process validation results
@@ -298,7 +440,15 @@ class DownloadManager {
                     logMessage.warn(`[VALID] File failed validation: ${path.basename(fileInfo.mediaPath)} - ${errorEntry.error}`);
                     logMessage.info(`[VALID] Will re-download: ${path.basename(fileInfo.mediaPath)}`);
                     fileInfo.message._fileExist = false;
-                    this.deleteInvalidFile(fileInfo.mediaPath);
+                    await this.deleteInvalidFile(fileInfo.mediaPath);
+                    if (channelId && outputFolder) {
+                        db.setFileDownloaded(channelId, outputFolder, fileInfo.message.id, 0);
+                        db.setValidationState(channelId, outputFolder, fileInfo.message.id, {
+                            status: config.get("download.quarantineInvalidFiles", true) ? "quarantined" : "failed",
+                            profile: deepValidation ? "full" : config.get("download.validationProfile", "sampled"),
+                            error: errorEntry.error,
+                        });
+                    }
                     batchSkippedExisting--;
                     skippedExisting--;
                     batchNewFiles++;
@@ -371,10 +521,10 @@ class DownloadManager {
                             successfulDownloads++;
                             totalBytesDownloaded += result.fileSize;
                             addFileToCheckCache(mediaPath, result.fileSize);
-                            logMessage.dl(`[DL] Download success: msgId=${message.id}, totalSuccess=${successfulDownloads}`);
+                            logMessage.dl(`[DL] Download success: msgId=${message.id}, totalSuccess=${successfulDownloads}, profile=${result.validationProfile || 'none'}`);
                         } else {
                             failedDownloads++;
-                            logMessage.dl(`[DL] Download failed: msgId=${message.id}, totalFailed=${failedDownloads}`);
+                            logMessage.dl(`[DL] Download failed: msgId=${message.id}, totalFailed=${failedDownloads}, reason=${result.validationError || 'download error'}`);
                         }
                         
                         progressLogger.updateStats({
@@ -399,10 +549,14 @@ class DownloadManager {
                     this.activeDownloads.add(downloadPromise);
                 } else {
                     if (fileExist) {
-                        if (channelId && outputFolder) {
-                            db.setFileDownloaded(channelId, outputFolder, message.id, 1);
-                            downloadState.markDownloaded(message.id);
+                        if (!message._fromSnapshot && ffmpegPaths && channelId && outputFolder) {
+                            db.setValidationState(channelId, outputFolder, message.id, {
+                                status: "verified",
+                                profile: deepValidation ? "full" : config.get("download.validationProfile", "sampled"),
+                                error: null,
+                            });
                         }
+                        logMessage.cache(`[CACHE] Keeping verified existing file: msgId=${message.id}`);
                     } else if (!textMatchesFilters) {
                         skippedByTextFilter++;
                     } else {
@@ -459,18 +613,21 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
         paths.ensureDir(outputFolder);
         
         db.initDatabase(channelId, outputFolder);
+        initDownloadState(channelId, outputFolder);
 
         const manager = new DownloadManager(client);
         const floodState = createFloodState();
+        manager.channelId = channelId;
+        manager.outputFolder = outputFolder;
+        manager.deepValidation = !!options.deepValidation;
+        manager.ffmpegPaths = options.ffmpegPaths || null;
 
         logMessage.dl(`[DL] Fetching messages by IDs: ${JSON.stringify(messageIds)}`);
         const inputPeer = await manager.entityResolver.resolve(channelId);
         const messages = await manager.client.getMessages(inputPeer, { ids: messageIds });
         logMessage.dl(`[DL] getMessages returned ${messages.length} messages`);
         
-        let activeDownloads = new Set();
         let totalFilesToDownload = 0;
-        let queuedDownloads = 0;
         let successfulDownloads = 0;
         let failedDownloads = 0;
         let skippedExisting = 0;
@@ -508,8 +665,7 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
                     logMessage.cache(`[CACHE] Skipping existing: msgId=${message.id}`);
                     continue;
                 }
-                
-                queuedDownloads++;
+
                 logMessage.dl(`[DL] Queueing: msgId=${message.id}, file=${path.basename(mediaPath)}`);
                 
                 const downloadPromise = manager.downloadMedia(
@@ -529,21 +685,21 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
                     }
                 })
                 .finally(() => {
-                    activeDownloads.delete(downloadPromise);
+                    manager.activeDownloads.delete(downloadPromise);
                 });
                 
-                activeDownloads.add(downloadPromise);
+                manager.activeDownloads.add(downloadPromise);
             }
             
-            if (activeDownloads.size >= floodState.getParallelLimit()) {
+            if (manager.activeDownloads.size >= floodState.getParallelLimit()) {
                 logMessage.dl(`[DL] Queue full, waiting for free slot`);
-                await Promise.race(activeDownloads);
+                await Promise.race(manager.activeDownloads);
             }
         }
 
-        if (activeDownloads.size > 0) {
+        if (manager.activeDownloads.size > 0) {
             logMessage.info("[DL] Waiting for files to be downloaded");
-            await Promise.all([...activeDownloads]);
+            await Promise.all([...manager.activeDownloads]);
             logMessage.success("[DL] Files downloaded successfully");
         }
         
@@ -561,4 +717,6 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
 module.exports = {
     DownloadManager,
     downloadMessagesByIds,
+    isRetryableValidationError,
+    shouldRetryDownload,
 };

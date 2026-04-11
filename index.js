@@ -72,19 +72,56 @@ const { initAuth } = require("./modules/auth");
 const { searchDialog, selectDialog, getDialogName, getAllDialogs} = require("./modules/dialoges");
 const { logMessage, MEDIA_TYPES } = require("./utils/helper");
 const logger = require("./utils/logger");
+const db = require("./utils/db");
 
 logger.init();
 
+let client = null;
+let shutdownInProgress = false;
+
+const shutdown = async (exitCode, reason = null) => {
+  if (shutdownInProgress) {
+    return;
+  }
+
+  shutdownInProgress = true;
+
+  if (reason) {
+    logger.writeSync("info", reason);
+  }
+
+  if (client && typeof client.disconnect === "function") {
+    try {
+      await client.disconnect();
+    } catch (error) {
+      logger.writeSync("error", `[MAIN] Failed to disconnect Telegram client: ${error?.message || String(error)}`);
+    }
+  }
+
+  try {
+    db.closeAllConnections();
+  } catch (error) {
+    logger.writeSync("error", `[MAIN] Failed to close database connections: ${error?.message || String(error)}`);
+  }
+
+  logger.close();
+  process.exit(exitCode);
+};
+
 process.on('SIGINT', () => {
-    logger.writeSync('info', 'Process interrupted (SIGINT), shutting down...');
-    logger.close();
-    process.exit(130);
+    shutdown(130, 'Process interrupted (SIGINT), shutting down...').catch((error) => {
+      logger.writeSync('error', `[MAIN] Shutdown failed after SIGINT: ${error?.message || String(error)}`);
+      logger.close();
+      process.exit(130);
+    });
 });
 
 process.on('SIGTERM', () => {
-    logger.writeSync('info', 'Process terminated (SIGTERM), shutting down...');
-    logger.close();
-    process.exit(143);
+    shutdown(143, 'Process terminated (SIGTERM), shutting down...').catch((error) => {
+      logger.writeSync('error', `[MAIN] Shutdown failed after SIGTERM: ${error?.message || String(error)}`);
+      logger.close();
+      process.exit(143);
+    });
 });
 const {
   booleanInput,
@@ -323,18 +360,14 @@ const autoChannelId = (() => {
 
     if (args[0] === "rebuild-db") {
       await runDatabaseRebuild(client, directRebuildChannelId);
-      if (client) {
-        await client.disconnect();
-      }
-      process.exit(0);
+      await shutdown(0);
+      return;
     }
 
     if (autoMode || autoChannelId !== null) {
       await runAutoMode(client, autoChannelId);
-      if (client) {
-        await client.disconnect();
-      }
-      process.exit(0);
+      await shutdown(0);
+      return;
     }
 
     // Show main menu and get choice
@@ -377,15 +410,11 @@ const autoChannelId = (() => {
         logMessage.error("Unknown option selected");
     }
 
-    if (client) {
-      await client.disconnect();
-    }
-    process.exit(0);
+    await shutdown(0);
   } catch (err) {
     const errorText = err?.stack || err?.message || String(err);
     logger.writeSync("error", `[MAIN] Unhandled error: ${errorText}`);
     console.error(err);
-    logger.close();
-    process.exit(1);
+    await shutdown(1);
   }
 })();

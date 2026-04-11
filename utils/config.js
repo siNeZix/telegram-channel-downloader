@@ -13,9 +13,14 @@ const DEFAULTS = {
         maxParallel: 20,
         minParallel: 2,
         baseRpcDelaySeconds: 0.05,
+        maxValidationRetries: 3,
+        retryDelaySeconds: 2,
         messageLimit: 200,
         fastForwardMessageLimit: 1000,
         checkProgressIntervalFiles: 100,
+        validationProfile: "sampled",
+        quarantineInvalidFiles: true,
+        trustSnapshotsForValidation: true,
     },
     logging: {
         progressLogIntervalSeconds: 5,
@@ -26,17 +31,21 @@ const DEFAULTS = {
  * Класс для управления конфигурацией с поддержкой динамических изменений
  */
 class ConfigManager {
-    constructor() {
+    constructor(options = {}) {
+        this.watchEnabled = options.watch !== false;
+        this.explicitConfigPath = options.configPath || null;
         this.config = this._deepClone(DEFAULTS);
         this.watchTimeout = null;
         this.suppressWatchUntil = 0;
         this.listeners = [];
         this._load();
-        this._watch();
+        if (this.watchEnabled) {
+            this._watch();
+        }
     }
 
     get configPath() {
-        return pathsManager.config;
+        return this.explicitConfigPath || pathsManager.config;
     }
 
     /**
@@ -131,7 +140,7 @@ class ConfigManager {
      */
     _watch() {
         try {
-            fs.watch(this.configPath, (eventType) => {
+            const watcher = fs.watch(this.configPath, (eventType) => {
                 if (Date.now() < this.suppressWatchUntil) {
                     return;
                 }
@@ -146,6 +155,10 @@ class ConfigManager {
                     }, 100);
                 }
             });
+
+            if (typeof watcher.unref === 'function') {
+                watcher.unref();
+            }
         } catch (error) {
             console.error('[CONFIG] Error setting up watcher:', error.message);
         }
@@ -292,3 +305,5 @@ class ConfigManager {
 const configManager = new ConfigManager();
 
 module.exports = configManager;
+module.exports.ConfigManager = ConfigManager;
+module.exports.DEFAULTS = DEFAULTS;

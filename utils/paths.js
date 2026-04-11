@@ -13,6 +13,7 @@ const resolvePath = (value) => path.resolve(value);
 class PathsManager {
 	constructor() {
 		this.snapshots = "snapshots";
+		this.quarantine = "quarantine";
 		this.reset();
 	}
 
@@ -68,6 +69,10 @@ class PathsManager {
 
 	getSnapshotsPath(channelId, exportRoot = this.export) {
 		return path.join(this.getChannelExportPath(channelId, exportRoot), this.snapshots);
+	}
+
+	getQuarantinePath(channelId, exportRoot = this.export) {
+		return path.join(this.getChannelExportPath(channelId, exportRoot), this.quarantine);
 	}
 
 	getRawMessagesPath(channelId, exportRoot = this.export) {

@@ -1,10 +1,11 @@
 const fs = require("fs");
 const path = require("path");
 const { scanExportDirectory } = require("./file_scanner");
-const { isFFmpegAvailable, getFFmpegPaths, validateFiles, validateFile, validateVideoDeep } = require("./ffmpeg_validator");
+const { isFFmpegAvailable, getFFmpegPaths, validateFile, validateVideoDeep } = require("./ffmpeg_validator");
 const { loadSnapshots, logMessage } = require("../utils/helper");
 const paths = require("../utils/paths");
 const db = require("../utils/db");
+const { ValidationService } = require("../services/ValidationService");
 
 const MAX_PARALLEL = 10;
 
@@ -116,6 +117,11 @@ function deleteFile(filePath) {
     }
 }
 
+async function quarantineFile(channelId, outputFolder, filePath, reason, metadata = {}) {
+	const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths: null });
+	return validationService.quarantineFile(filePath, reason, metadata);
+}
+
 /**
  * Run validation
  * @param {Object} options
@@ -173,8 +179,9 @@ async function runValidation(options = {}) {
         let totalSnapshotEntries = 0;
         
         for (const entry of entries) {
-            if (entry.isDirectory() && entry.name !== "snapshots") {
+            if (entry.isDirectory() && entry.name !== "snapshots" && entry.name !== "quarantine") {
                 const channelPath = path.join(exportPath, entry.name);
+                db.initDatabase(entry.name, channelPath);
                 const snapshots = loadSnapshots(channelPath);
                 if (snapshots.size > 0) {
                     snapshotsByChannel.set(channelPath, snapshots);
@@ -203,6 +210,7 @@ async function runValidation(options = {}) {
     log.success(`Found ffmpeg: ${ffmpegPaths.ffmpeg}`);
     log.success(`Found ffprobe: ${ffmpegPaths.ffprobe}`);
     logMessage.valid(`[VALID] ffmpeg: ${ffmpegPaths.ffmpeg}, ffprobe: ${ffmpegPaths.ffprobe}`);
+    const validationService = new ValidationService({ ffmpegPaths });
 
     // Check export directory
     if (!fs.existsSync(exportPath)) {
@@ -305,27 +313,33 @@ async function runValidation(options = {}) {
                     // DEEP mode: try to validate with FFmpeg
                     logMessage.info(`[CACHE] Running deep validation for: ${file.relativePath}`);
                     
-                    const validationResult = await validateFile(
-                        file.path,
-                        file.type,
-                        ffmpegPaths.ffmpeg,
-                        ffmpegPaths.ffprobe,
-                        true // deep validation
-                    );
+                    const expectedSize = db.getExpectedSize(channelId, outputFolder, messageId);
+                    const validationResult = await validationService.validateMediaFile(file.path, file.type, {
+                        deepValidation: true,
+                        expectedSize,
+                    });
                     
                     if (validationResult.valid) {
                         // File is actually valid! Recover it by updating DB
                         logMessage.success(`[CACHE] File is valid, recovering: ${file.relativePath}`);
                         db.setFileDownloaded(channelId, outputFolder, messageId, 1);
+                        db.setValidationState(channelId, outputFolder, messageId, {
+                            status: "verified",
+                            profile: "full",
+                            error: null,
+                        });
                         totalDbRecovered++;
                     } else {
                         // File is corrupt - delete it
-                        logMessage.warn(`[CACHE] File failed validation, deleting: ${file.relativePath}`);
+                        logMessage.warn(`[CACHE] File failed validation, quarantining: ${file.relativePath}`);
                         if (dryRun) {
-                            log.dryrun(`Would delete (not in DB, invalid): ${file.relativePath}`);
+                            log.dryrun(`Would quarantine (not in DB, invalid): ${file.relativePath}`);
                         } else {
-                            const deleted = deleteFile(file.path);
-                            if (deleted) {
+							const quarantined = await quarantineFile(channelId, outputFolder, file.path, "not in DB + deep validation failed", {
+                                relativePath: file.relativePath,
+                                size: file.size,
+                            });
+                            if (quarantined?.ok) {
                                 totalDeleted++;
                                 deletedEntries.push({
                                     path: file.relativePath,
@@ -334,18 +348,24 @@ async function runValidation(options = {}) {
                                     timestamp: new Date().toISOString()
                                 });
                                 log.deleted(`${file.relativePath} (not in DB, invalid)`);
+                            } else if (quarantined) {
+								validationErrors++;
+								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
                             }
                         }
                     }
                 } else {
                     // Not in deep mode or file doesn't exist - delete if exists
                     if (fs.existsSync(file.path)) {
-                        logMessage.warn(`[CACHE] File not in DB, deleting: ${file.relativePath}`);
+                        logMessage.warn(`[CACHE] File not in DB, quarantining: ${file.relativePath}`);
                         if (dryRun) {
-                            log.dryrun(`Would delete (not in DB): ${file.relativePath}`);
+                            log.dryrun(`Would quarantine (not in DB): ${file.relativePath}`);
                         } else {
-                            const deleted = deleteFile(file.path);
-                            if (deleted) {
+							const quarantined = await quarantineFile(channelId, outputFolder, file.path, "not marked as downloaded in DB", {
+                                relativePath: file.relativePath,
+                                size: file.size,
+                            });
+                            if (quarantined?.ok) {
                                 totalDeleted++;
                                 deletedEntries.push({
                                     path: file.relativePath,
@@ -354,6 +374,9 @@ async function runValidation(options = {}) {
                                     timestamp: new Date().toISOString()
                                 });
                                 log.deleted(`${file.relativePath} (not in DB)`);
+                            } else if (quarantined) {
+								validationErrors++;
+								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
                             }
                         }
                     } else {
@@ -383,7 +406,7 @@ async function runValidation(options = {}) {
         if (deep) {
             log.info(`DB Recovered:   ${totalDbRecovered} files (validated and updated)`);
         }
-        log.error(`Deleted:       ${totalDeleted} files`);
+        log.error(`Quarantined:   ${totalDeleted} files`);
         if (dryRun) {
             log.warn(`DRY-RUN: No files were actually deleted`);
         }
@@ -415,7 +438,7 @@ async function runValidation(options = {}) {
     let validationCount = 0;
     let validationErrors = 0;
 
-    const progressCallback = (file, result) => {
+    const progressCallback = async (file, result) => {
         const now = Date.now();
         validationCount++;
 
@@ -430,7 +453,8 @@ async function runValidation(options = {}) {
                     const relativeToChannel = file.relativePath.substring(channelName.length + 1);
                     
                     if (snapshots.has(relativeToChannel)) {
-                        // File is in snapshot - skip validation
+                        // Snapshot means the file is intentionally accounted for,
+                        // even if it has been removed from disk later.
                         totalSkipped++;
                         logMessage.cache(`[VALID] Skipped (snapshot): ${file.relativePath}`);
                         if (verbose) {
@@ -460,11 +484,21 @@ async function runValidation(options = {}) {
             
             logMessage.warn(`[VALID] File invalid: ${file.relativePath}, size=${formatBytes(file.size)}, error=${result.error}`);
 
+			const channelId = extractChannelIdFromPath(file.path, exportPath);
+			const messageId = extractMessageIdFromPath(file.path);
+			const outputFolder = channelId ? path.join(exportPath, channelId) : null;
+			let quarantined = null;
+
             if (dryRun) {
-                log.dryrun(`Would delete: ${file.relativePath} (${formatBytes(file.size)}) - ${result.error}`);
+                log.dryrun(`Would quarantine: ${file.relativePath} (${formatBytes(file.size)}) - ${result.error}`);
             } else {
-                const deleted = deleteFile(file.path);
-                if (deleted) {
+                quarantined = channelId && outputFolder
+					? await quarantineFile(channelId, outputFolder, file.path, result.error, {
+						relativePath: file.relativePath,
+						size: file.size,
+					})
+					: deleteFile(file.path);
+                if (quarantined?.ok || quarantined === true) {
                     totalDeleted++;
                     deletedEntries.push({
                         path: file.relativePath,
@@ -473,18 +507,72 @@ async function runValidation(options = {}) {
                         timestamp: new Date().toISOString()
                     });
                     log.deleted(`${file.relativePath} (${formatBytes(file.size)}) - ${result.error}`);
+                } else if (quarantined) {
+					validationErrors++;
+					log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
                 }
             }
+
+			if (channelId && outputFolder && messageId) {
+				db.setFileDownloaded(channelId, outputFolder, messageId, 0);
+				db.setValidationState(channelId, outputFolder, messageId, {
+					status: dryRun ? "failed" : (quarantined?.ok || quarantined === true ? "quarantined" : "failed"),
+					profile: deep ? "full" : "sampled",
+					error: quarantined?.ok || quarantined === true ? result.error : `${result.error}; quarantine failed`,
+				});
+			}
         } else {
             totalValid++;
             if (verbose) {
                 log.success(`Valid: ${file.relativePath}`);
             }
             logMessage.valid(`[VALID] File valid: ${file.relativePath}`);
+
+			const channelId = extractChannelIdFromPath(file.path, exportPath);
+			const messageId = extractMessageIdFromPath(file.path);
+			const outputFolder = channelId ? path.join(exportPath, channelId) : null;
+			if (channelId && outputFolder && messageId) {
+				db.setValidationState(channelId, outputFolder, messageId, {
+					status: "verified",
+					profile: deep ? "full" : "sampled",
+					error: null,
+				});
+			}
         }
     };
 
-    const validationResult = await validateFiles(files, ffmpegPaths, progressCallback, MAX_PARALLEL, deep);
+    let fileIndex = 0;
+    const worker = async () => {
+        while (fileIndex < files.length) {
+            const currentIndex = fileIndex++;
+            if (currentIndex >= files.length) {
+                break;
+            }
+
+            const file = files[currentIndex];
+            const channelId = extractChannelIdFromPath(file.path, exportPath);
+            const messageId = extractMessageIdFromPath(file.path);
+            const outputFolder = channelId ? path.join(exportPath, channelId) : null;
+            const expectedSize = channelId && outputFolder && messageId
+                ? db.getExpectedSize(channelId, outputFolder, messageId)
+                : null;
+            try {
+                const result = await validationService.validateMediaFile(file.path, file.type, {
+                    deepValidation: deep,
+                    expectedSize,
+                });
+                await progressCallback(file, result);
+            } catch (error) {
+                validationErrors++;
+                log.error(`Per-file validation failed for ${file.relativePath}: ${error.message}`);
+            }
+        }
+    };
+    const workers = [];
+    for (let i = 0; i < Math.min(MAX_PARALLEL, files.length); i++) {
+        workers.push(worker());
+    }
+    await Promise.all(workers);
     const validationTime = Date.now() - validationStart;
     
     logMessage.valid(`[VALID] Validation complete: validated=${validationCount}, valid=${totalValid}, invalid=${totalInvalid}, errors=${validationErrors}, time=${validationTime}ms`);
@@ -503,9 +591,9 @@ async function runValidation(options = {}) {
     log.success(`Valid:   ${totalValid} files`);
     log.error(`Invalid: ${totalInvalid} files`);
     if (dryRun) {
-        log.warn(`Would delete: ${totalInvalid} files`);
+        log.warn(`Would quarantine: ${totalInvalid} files`);
     } else {
-        log.info(`Deleted: ${totalDeleted} files`);
+        log.info(`Quarantined: ${totalDeleted} files`);
     }
     log.info(`Errors:  ${validationErrors}`);
     log.info(`Duration: ${formatDuration((Date.now() - startTime) / 1000)}`);

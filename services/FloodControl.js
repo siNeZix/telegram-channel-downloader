@@ -8,8 +8,10 @@ const MAX_RPC_RETRIES = 5;
  * Сервис для управления Flood Wait ограничениями Telegram API
  */
 class FloodControl {
-    constructor() {
+    constructor(options = {}) {
         this.cooldownUntil = 0;
+        this.waitFn = options.waitFn || wait;
+        this.nowFn = options.nowFn || Date.now;
         this.currentParallelLimit = config.get('download.maxParallel');
         this.consecutiveFloods = 0;
         this.successStreak = 0;
@@ -71,7 +73,7 @@ class FloodControl {
      * @returns {number} Количество секунд ожидания
      */
     async maybeWaitCooldown() {
-        const now = Date.now();
+        const now = this.nowFn();
         if (this.cooldownUntil > now) {
             const remainingSeconds = Math.ceil((this.cooldownUntil - now) / 1000);
             logMessage.flood(`[FLOOD] Cooldown active: now=${now}, cooldownUntil=${this.cooldownUntil}, remaining=${remainingSeconds}s`);
@@ -94,13 +96,13 @@ class FloodControl {
             const waitSeconds = await this.maybeWaitCooldown();
             if (waitSeconds > 0) {
                 logMessage.flood(`[FLOOD] Waiting ${waitSeconds}s before attempt ${attempt}/${MAX_RPC_RETRIES} for ${label}`);
-                await wait(waitSeconds);
+                await this.waitFn(waitSeconds);
             }
             
             const baseDelay = config.get('download.baseRpcDelaySeconds');
             if (baseDelay > 0) {
                 logMessage.flood(`[FLOOD] Applying base delay: ${baseDelay}s`);
-                await wait(baseDelay);
+                await this.waitFn(baseDelay);
             }
             
             try {
@@ -135,7 +137,7 @@ class FloodControl {
                         minParallel,
                         this.currentParallelLimit - 1
                     );
-                    this.cooldownUntil = Date.now() + (floodSeconds + 1) * 1000;
+                    this.cooldownUntil = this.nowFn() + (floodSeconds + 1) * 1000;
                     
                     logMessage.error(
                         `[FLOOD] FLOOD_WAIT detected in ${label}. Wait ${floodSeconds}s, retry ${attempt}/${MAX_RPC_RETRIES}. Parallel limit: ${oldLimit} -> ${this.currentParallelLimit}`
@@ -198,7 +200,7 @@ class FloodControl {
             cooldownUntil: this.cooldownUntil,
             consecutiveFloods: this.consecutiveFloods,
             successStreak: this.successStreak,
-            now: Date.now()
+            now: this.nowFn()
         };
     }
 }

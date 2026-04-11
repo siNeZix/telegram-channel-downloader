@@ -14,6 +14,7 @@ const logMessage = () => helper().logMessage;
 const filterString = (value) => helper().filterString(value);
 const getMediaRelativePath = (message) => helper().getMediaRelativePath(message);
 const getMediaType = (message) => helper().getMediaType(message);
+const getExpectedMediaSize = (message) => helper().getExpectedMediaSize(message);
 
 const dbConnections = new Map();
 
@@ -142,6 +143,11 @@ const extractRecordFromRawMessage = (rawMessage, outputFolder) => {
 		media_type: mediaType || null,
 		media_path: mediaPath,
 		media_name: mediaPath ? path.basename(mediaPath) : null,
+		expected_size: getExpectedMediaSize(rawMessage),
+		validation_status: null,
+		validation_profile: null,
+		validation_error: null,
+		validated_at: null,
 	};
 };
 
@@ -165,6 +171,11 @@ const extractRecordFromProcessedMessage = (processedMessage, outputFolder) => {
 		media_type: processedMessage.mediaType || null,
 		media_path: mediaPath,
 		media_name: processedMessage.mediaName || (mediaPath ? path.basename(mediaPath) : null),
+		expected_size: Number.isFinite(processedMessage.expectedSize) ? Number(processedMessage.expectedSize) : null,
+		validation_status: null,
+		validation_profile: null,
+		validation_error: null,
+		validated_at: null,
 	};
 };
 
@@ -185,6 +196,11 @@ const extractRecordFromLegacyRow = (row, outputFolder) => {
 		media_type: processedRecord.media_type ?? rawRecord.media_type ?? null,
 		media_path: processedRecord.media_path ?? rawRecord.media_path ?? null,
 		media_name: processedRecord.media_name ?? rawRecord.media_name ?? null,
+		expected_size: processedRecord.expected_size ?? rawRecord.expected_size ?? row.expected_size ?? null,
+		validation_status: row.validation_status ?? null,
+		validation_profile: row.validation_profile ?? null,
+		validation_error: row.validation_error ?? null,
+		validated_at: row.validated_at ?? null,
 	};
 
 	if (!merged.media_path) {
@@ -214,7 +230,12 @@ const createMessagesTable = (db, tableName = "messages") => {
 			has_media INTEGER DEFAULT 0,
 			media_type TEXT,
 			media_path TEXT,
-			media_name TEXT
+			media_name TEXT,
+			expected_size INTEGER,
+			validation_status TEXT,
+			validation_profile TEXT,
+			validation_error TEXT,
+			validated_at INTEGER
 		)
 	`);
 };
@@ -224,6 +245,7 @@ const createIndexes = (db) => {
 		CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date);
 		CREATE INDEX IF NOT EXISTS idx_messages_downloaded ON messages(downloaded);
 		CREATE INDEX IF NOT EXISTS idx_messages_media_path ON messages(media_path);
+		CREATE INDEX IF NOT EXISTS idx_messages_validation_status ON messages(validation_status);
 	`);
 };
 
@@ -245,7 +267,12 @@ const getUpsertStatement = (db) => {
 			has_media,
 			media_type,
 			media_path,
-			media_name
+			media_name,
+			expected_size,
+			validation_status,
+			validation_profile,
+			validation_error,
+			validated_at
 		) VALUES (
 			@id,
 			@date,
@@ -256,7 +283,12 @@ const getUpsertStatement = (db) => {
 			@has_media,
 			@media_type,
 			@media_path,
-			@media_name
+			@media_name,
+			COALESCE(@expected_size, (SELECT expected_size FROM messages WHERE id = @id)),
+			COALESCE((SELECT validation_status FROM messages WHERE id = @id), NULL),
+			COALESCE((SELECT validation_profile FROM messages WHERE id = @id), NULL),
+			COALESCE((SELECT validation_error FROM messages WHERE id = @id), NULL),
+			COALESCE((SELECT validated_at FROM messages WHERE id = @id), NULL)
 		)
 		ON CONFLICT(id) DO UPDATE SET
 			date = COALESCE(excluded.date, messages.date),
@@ -267,7 +299,12 @@ const getUpsertStatement = (db) => {
 			has_media = COALESCE(excluded.has_media, messages.has_media),
 			media_type = COALESCE(excluded.media_type, messages.media_type),
 			media_path = COALESCE(excluded.media_path, messages.media_path),
-			media_name = COALESCE(excluded.media_name, messages.media_name)
+			media_name = COALESCE(excluded.media_name, messages.media_name),
+			expected_size = COALESCE(excluded.expected_size, messages.expected_size),
+			validation_status = COALESCE(messages.validation_status, excluded.validation_status),
+			validation_profile = COALESCE(messages.validation_profile, excluded.validation_profile),
+			validation_error = COALESCE(messages.validation_error, excluded.validation_error),
+			validated_at = COALESCE(messages.validated_at, excluded.validated_at)
 	`);
 	upsertStatements.set(dbPath, stmt);
 	return stmt;
@@ -299,7 +336,12 @@ const migrateLegacyJsonSchema = (db, outputFolder) => {
 				has_media,
 				media_type,
 				media_path,
-				media_name
+				media_name,
+				expected_size,
+				validation_status,
+				validation_profile,
+				validation_error,
+				validated_at
 			) VALUES (
 				@id,
 				@date,
@@ -310,7 +352,12 @@ const migrateLegacyJsonSchema = (db, outputFolder) => {
 				@has_media,
 				@media_type,
 				@media_path,
-				@media_name
+				@media_name,
+				@expected_size,
+				@validation_status,
+				@validation_profile,
+				@validation_error,
+				@validated_at
 			)
 		`);
 
@@ -331,6 +378,22 @@ const ensureSchema = (db, outputFolder) => {
 	createMessagesTable(db);
 	migrateLegacyJsonSchema(db, outputFolder);
 	createMessagesTable(db);
+	const columns = new Set(db.prepare("PRAGMA table_info(messages)").all().map((column) => column.name));
+	if (!columns.has("validation_status")) {
+		db.exec("ALTER TABLE messages ADD COLUMN validation_status TEXT");
+	}
+	if (!columns.has("expected_size")) {
+		db.exec("ALTER TABLE messages ADD COLUMN expected_size INTEGER");
+	}
+	if (!columns.has("validation_profile")) {
+		db.exec("ALTER TABLE messages ADD COLUMN validation_profile TEXT");
+	}
+	if (!columns.has("validation_error")) {
+		db.exec("ALTER TABLE messages ADD COLUMN validation_error TEXT");
+	}
+	if (!columns.has("validated_at")) {
+		db.exec("ALTER TABLE messages ADD COLUMN validated_at INTEGER");
+	}
 	createIndexes(db);
 };
 
@@ -604,6 +667,50 @@ const isFileDownloaded = (channelId, outputFolder, messageId) => {
 	return downloaded;
 };
 
+const getExpectedSize = (channelId, outputFolder, messageId) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) {
+		logMessage().db(`[DB] getExpectedSize: channelId=${channelId}, msgId=${messageId}, result=NULL_DB`);
+		return null;
+	}
+
+	const row = db.prepare("SELECT expected_size FROM messages WHERE id = ?").get(messageId);
+	return row && Number.isFinite(row.expected_size) ? Number(row.expected_size) : null;
+};
+
+const setValidationState = (channelId, outputFolder, messageId, state = {}) => {
+	const db = getDatabase(channelId, outputFolder);
+	if (!db) {
+		logMessage().db(`[DB] setValidationState: channelId=${channelId}, msgId=${messageId}, result=NULL_DB`);
+		return false;
+	}
+
+	const startTime = Date.now();
+	try {
+		const result = db.prepare(`
+			UPDATE messages
+			SET validation_status = ?,
+				validation_profile = ?,
+				validation_error = ?,
+				validated_at = ?
+			WHERE id = ?
+		`).run(
+			state.status ?? null,
+			state.profile ?? null,
+			state.error ?? null,
+			state.validatedAt ?? Date.now(),
+			messageId,
+		);
+		const elapsed = Date.now() - startTime;
+		const changes = result ? result.changes : 0;
+		logMessage().db(`[DB] setValidationState: msgId=${messageId}, status=${state.status ?? 'null'}, profile=${state.profile ?? 'null'}, changes=${changes}, time=${elapsed}ms`);
+		return changes > 0;
+	} catch (e) {
+		logMessage().error(`[DB] Error setting validation state for message ${messageId}: ${e.message}`);
+		return false;
+	}
+};
+
 const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
@@ -685,6 +792,8 @@ module.exports = {
 	closeDatabase,
 	setFileDownloaded,
 	isFileDownloaded,
+	getExpectedSize,
+	setValidationState,
 	syncDownloadedFromSnapshots,
 	getDownloadedSet,
 	getMediaPathMap,

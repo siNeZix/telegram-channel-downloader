@@ -183,8 +183,21 @@ function writeSync(level, message) {
     const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
     const currentLogPath = path.join(logsDir, CURRENT_LOG_NAME);
     const cleanMessage = stripAnsi(message);
-    const timestamp = new Date().toISOString();
-    const fileLine = `[${timestamp}] [${level.toUpperCase()}] ${cleanMessage}\n`;
+    const now = new Date();
+    const timestamp = now.toISOString();
+
+    let deltaStr = '';
+    if (lastLogTimestamp !== null) {
+        const deltaMs = now - lastLogTimestamp;
+        if (deltaMs >= 1000) {
+            deltaStr = ` (+${(deltaMs / 1000).toFixed(2)}s)`;
+        } else {
+            deltaStr = ` (+${deltaMs}ms)`;
+        }
+    }
+    lastLogTimestamp = now;
+
+    const fileLine = `[${timestamp}] [${level.toUpperCase()}]${deltaStr} ${cleanMessage}\n`;
 
     try {
         if (!fs.existsSync(logsDir)) {
@@ -217,11 +230,15 @@ function close() {
 }
 
 function flush() {
-    if (debugStream) {
-        try { debugStream.write(''); } catch (e) { reportLoggerFailure(e, 'Failed to flush debug stream'); }
-    }
-    if (normalStream) {
-        try { normalStream.write(''); } catch (e) { reportLoggerFailure(e, 'Failed to flush current stream'); }
+    for (const stream of [debugStream, normalStream]) {
+        if (stream && stream.writable) {
+            try {
+                const fd = stream.fd;
+                if (fd != null) {
+                    fs.fsyncSync(fd);
+                }
+            } catch (e) { reportLoggerFailure(e, 'Failed to flush stream'); }
+        }
     }
 }
 
@@ -237,6 +254,8 @@ process.on('unhandledRejection', (reason) => {
     const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ''}`;
     writeSync('error', msg);
     console.error(msg);
+    close();
+    process.exit(1);
 });
 
 module.exports = {

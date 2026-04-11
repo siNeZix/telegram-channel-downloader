@@ -124,27 +124,27 @@ const LOG_PREFIXES = {
 
 const logMessage = {
 	info: (message) => {
-		const line = `ℹ️  ${consoleColors.blue} ${message} ${consoleColors.reset}`;
+		const line = `ℹ️  ${consoleColors.blue}${message}${consoleColors.reset}`;
 		console.log(line);
 		logger.write("info", line);
 	},
 	error: (message) => {
-		const line = `❌ ${consoleColors.red} ${message} ${consoleColors.reset}`;
+		const line = `❌ ${consoleColors.red}${message}${consoleColors.reset}`;
 		console.log(line);
 		logger.write("error", line);
 	},
 	success: (message) => {
-		const line = `✅ ${consoleColors.green} ${message} ${consoleColors.reset}`;
+		const line = `✅ ${consoleColors.green}${message}${consoleColors.reset}`;
 		console.log(line);
 		logger.write("success", line);
 	},
 	warn: (message) => {
-		const line = `⚠️  ${consoleColors.yellow} ${message} ${consoleColors.reset}`;
+		const line = `⚠️  ${consoleColors.yellow}${message}${consoleColors.reset}`;
 		console.log(line);
 		logger.write("warn", line);
 	},
 	debug: (message) => {
-		const line = `🔍 ${consoleColors.cyan} ${message} ${consoleColors.reset}`;
+		const line = `🔍 ${consoleColors.cyan}${message}${consoleColors.reset}`;
 		logger.write("debug", line);
 		if (shouldLog("debug")) {
 			console.log(line);
@@ -196,6 +196,27 @@ const getMediaType = (message) => {
 	}
 
 	return MEDIA_TYPES.OTHERS;
+};
+
+const getExpectedMediaSize = (message) => {
+	if (!message?.media) {
+		return null;
+	}
+
+	if (Number.isFinite(message.media?.document?.size)) {
+		return Number(message.media.document.size);
+	}
+
+	const photoSizes = message.media?.photo?.sizes;
+	if (Array.isArray(photoSizes) && photoSizes.length > 0) {
+		for (let i = photoSizes.length - 1; i >= 0; i--) {
+			if (Number.isFinite(photoSizes[i]?.size)) {
+				return Number(photoSizes[i].size);
+			}
+		}
+	}
+
+	return null;
 };
 
 // Генерация имени файла на основе сообщения (используется в checkFileExist и getMediaPath)
@@ -443,6 +464,7 @@ const circularStringify = (circularString, indent = 2) => {
 
 module.exports = {
 	getMediaType,
+	getExpectedMediaSize,
 	checkFileExist,
 	getMediaPath,
 	getMediaRelativePath,

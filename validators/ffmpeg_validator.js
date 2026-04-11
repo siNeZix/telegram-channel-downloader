@@ -147,7 +147,7 @@ async function validateImage(filePath, ffmpegBin) {
     // Exit code 0 means valid, non-zero means error
     const escapedPath = escapePathForCmd(filePath);
     const escapedFfmpeg = escapePathForCmd(ffmpegBin);
-    const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
+    const cmd = `${escapedFfmpeg} -v error -xerror -err_detect explode -i ${escapedPath} -f null -`;
     
     log.debug(`validateImage: running command: ${cmd}`);
 
@@ -362,6 +362,7 @@ module.exports = {
     findFFmpeg,
     isFFmpegAvailable,
     getFFmpegPaths,
+    execPromise,
     validateFile,
     validateFiles,
     validateImage,
