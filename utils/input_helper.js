@@ -1,5 +1,17 @@
 const inquirer = require("inquirer");
-const { MEDIA_TYPES } = require("./helper");
+const { MEDIA_TYPES, logMessage } = require("./helper");
+
+const promptSafe = async (question) => {
+  try {
+    return await inquirer.prompt(question);
+  } catch (err) {
+    if (err?.message?.includes("closed") || err?.code === "ENOTTY" || err?.message?.includes("stdin")) {
+      logMessage.error("[INPUT] Interactive input unavailable (stdin closed). Exiting.");
+      process.exit(130);
+    }
+    throw err;
+  }
+};
 
 const mobileNumberInput = async () => {
   const question = {
@@ -17,7 +29,7 @@ const mobileNumberInput = async () => {
     },
   };
 
-  const { phoneNumber } = await inquirer.prompt(question);
+  const { phoneNumber } = await promptSafe(question);
   return String(phoneNumber).trim();
 };
 

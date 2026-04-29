@@ -9,7 +9,6 @@ const {
 	validateVideo,
 	validateImage,
 	execPromise,
-	escapePathForCmd,
 	classifyFFmpegErrors,
 	getScaledTimeout,
 	SAMPLE_DECODE_TIMEOUT,
@@ -77,9 +76,6 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 		return { valid: false, error: "ffprobe: invalid duration for sampled validation" };
 	}
 
-	const escapedPath = escapePathForCmd(filePath);
-	const escapedFfmpeg = escapePathForCmd(ffmpegBin);
-
 	const samplePoints = [0];
 	if (duration >= 12) {
 		samplePoints.push(Math.max(0, duration * 0.33));
@@ -97,7 +93,7 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	const sampleTimeout = getScaledTimeout(filePath, SAMPLE_DECODE_TIMEOUT);
 
 	for (const point of samplePoints) {
-		const sampleCmd = `${escapedFfmpeg} -v error -i ${escapedPath} -ss ${point.toFixed(3)} -t ${SAMPLE_WINDOW_SECONDS} -f null -`;
+		const sampleCmd = [ffmpegBin, "-v", "error", "-i", filePath, "-ss", point.toFixed(3), "-t", String(SAMPLE_WINDOW_SECONDS), "-f", "null", "-"];
 		const result = await execPromise(sampleCmd, sampleTimeout);
 
 		if (result.exitCode === 0) {
@@ -129,7 +125,7 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	const needTail = duration >= 15;
 	if (needTail) {
 		const tailWindow = Math.min(12, Math.max(6, Math.floor(duration * 0.15)));
-		const tailCmd = `${escapedFfmpeg} -v error -sseof -${tailWindow} -i ${escapedPath} -t ${tailWindow} -f null -`;
+		const tailCmd = [ffmpegBin, "-v", "error", "-sseof", String(-tailWindow), "-i", filePath, "-t", String(tailWindow), "-f", "null", "-"];
 		const tailTimeout = getScaledTimeout(filePath, TAIL_DECODE_TIMEOUT);
 		const tailResult = await execPromise(tailCmd, tailTimeout);
 

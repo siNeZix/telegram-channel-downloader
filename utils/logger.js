@@ -26,7 +26,8 @@ const ARCHIVE_LOG_REGEX = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
 const DEBUG_ARCHIVE_LOG_REGEX = /^debug-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
 const MAX_DEBUG_LOG_SIZE_BYTES = 10 * 1024 * 1024;
 
-let lastLogTimestamp = null;
+	let lastLogTimestamp = null;
+	let initInProgress = false;
 
 function formatConsoleTimestamp(date) {
     const h = String(date.getHours()).padStart(2, '0');
@@ -164,61 +165,77 @@ function cleanupOldDebugArchives() {
 }
 
 function init() {
-    installConsoleTimestamps();
+	if (initInProgress) return;
+	if (initialized && debugStream && normalStream) return;
 
-    if (initialized && debugStream && normalStream) return;
+	initInProgress = true;
 
-    const logsDir = pathsManager.logs;
+	try {
+		installConsoleTimestamps();
 
-    if (!fs.existsSync(logsDir)) {
-        fs.mkdirSync(logsDir, { recursive: true });
-    }
+		const logsDir = pathsManager.logs;
 
-    const currentLogPath = path.join(logsDir, CURRENT_LOG_NAME);
-    if (fs.existsSync(currentLogPath)) {
-        const archiveName = formatDateForFilename(new Date()) + '.log';
-        const archivePath = path.join(logsDir, archiveName);
-        try {
-            fs.renameSync(currentLogPath, archivePath);
-        } catch (err) {
-            try { fs.unlinkSync(currentLogPath); } catch (e) {}
-        }
-    }
+		if (!fs.existsSync(logsDir)) {
+			fs.mkdirSync(logsDir, { recursive: true });
+		}
 
-    const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
-    rotateDebugLogIfNeeded(logsDir, debugLogPath);
-    if (!fs.existsSync(debugLogPath)) {
-        fs.writeFileSync(debugLogPath, '');
-    }
+		const currentLogPath = path.join(logsDir, CURRENT_LOG_NAME);
+		if (fs.existsSync(currentLogPath)) {
+			const archiveName = formatDateForFilename(new Date()) + '.log';
+			const archivePath = path.join(logsDir, archiveName);
+			try {
+				fs.renameSync(currentLogPath, archivePath);
+			} catch (err) {
+				try { fs.unlinkSync(currentLogPath); } catch (e) {}
+			}
+		}
 
-    cleanupOldArchives();
-    cleanupOldDebugArchives();
+		const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
+		rotateDebugLogIfNeeded(logsDir, debugLogPath);
+		if (!fs.existsSync(debugLogPath)) {
+			fs.writeFileSync(debugLogPath, '');
+		}
 
-    debugStream = fs.createWriteStream(debugLogPath, { flags: 'a', encoding: 'utf8' });
-    normalStream = fs.createWriteStream(currentLogPath, { flags: 'a', encoding: 'utf8' });
+		cleanupOldArchives();
+		cleanupOldDebugArchives();
 
-    const ds = debugStream;
-    const ns = normalStream;
-    ds.on('error', (err) => {
-        reportLoggerFailure(err, 'debug stream error');
-        if (debugStream === ds) { debugStream = null; initialized = false; }
-    });
-    ns.on('error', (err) => {
-        reportLoggerFailure(err, 'current stream error');
-        if (normalStream === ns) { normalStream = null; initialized = false; }
-    });
+		debugStream = fs.createWriteStream(debugLogPath, { flags: 'a', encoding: 'utf8' });
+		normalStream = fs.createWriteStream(currentLogPath, { flags: 'a', encoding: 'utf8' });
 
-    if (flushInterval) clearInterval(flushInterval);
-    flushInterval = setInterval(flush, FLUSH_INTERVAL_MS);
-    flushInterval.unref();
+		const ds = debugStream;
+		const ns = normalStream;
+		ds.on('error', (err) => {
+			reportLoggerFailure(err, 'debug stream error');
+			if (debugStream === ds) { debugStream = null; initialized = false; }
+		});
+		ns.on('error', (err) => {
+			reportLoggerFailure(err, 'current stream error');
+			if (normalStream === ns) { normalStream = null; initialized = false; }
+		});
 
-    initialized = true;
+		if (flushInterval) clearInterval(flushInterval);
+		flushInterval = setInterval(flush, FLUSH_INTERVAL_MS);
+		flushInterval.unref();
+
+		initialized = true;
+	} catch (err) {
+		reportLoggerFailure(err, 'Failed to initialize logger');
+		debugStream = null;
+		normalStream = null;
+		initialized = false;
+	} finally {
+		initInProgress = false;
+	}
 }
 
 function write(level, message) {
-    if (!initialized || !debugStream || !normalStream) {
-        init();
-    }
+	if (typeof level !== 'string' || !level) {
+		reportLoggerFailure(new Error(`Invalid log level: ${level}`), 'write skipped');
+		return;
+	}
+	if (!initialized || !debugStream || !normalStream) {
+		init();
+	}
 
     if (!debugStream || !normalStream) {
         reportLoggerFailure(new Error('Logger streams unavailable after init'), 'write skipped');
@@ -306,49 +323,26 @@ function close() {
 }
 
 function flush() {
-    for (const stream of [debugStream, normalStream]) {
-        if (stream && stream.writable) {
-            try {
-                const fd = stream.fd;
-                if (fd != null) {
-                    fs.fsyncSync(fd);
-                }
-            } catch (e) { reportLoggerFailure(e, 'Failed to flush stream'); }
-        }
-    }
+	for (const stream of [debugStream, normalStream]) {
+		if (stream && stream.writable) {
+			try {
+				const fd = stream.fd;
+				if (fd != null) {
+					fs.fsyncSync(fd);
+				}
+			} catch (e) { reportLoggerFailure(e, 'Failed to flush stream'); }
+		}
+	}
 }
-
-process.on('uncaughtException', (err) => {
-    const msg = `[FATAL] Uncaught exception: ${err?.message || String(err)}\n${err?.stack || ''}`;
-    writeSync('error', msg);
-    console.error(msg);
-    try {
-        const { cancelAllDownloads } = require('../services/DownloadManager');
-        cancelAllDownloads();
-    } catch (e) { /* best effort */ }
-    close();
-    process.exit(1);
-});
-
-process.on('unhandledRejection', (reason) => {
-    const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ''}`;
-    writeSync('error', msg);
-    console.error(msg);
-    try {
-        const { cancelAllDownloads } = require('../services/DownloadManager');
-        cancelAllDownloads();
-    } catch (e) { /* best effort */ }
-    close();
-    process.exit(1);
-});
 
 installConsoleTimestamps();
 
 module.exports = {
-    init,
-    write,
-    writeSync,
-    close,
-    flush,
-    stripAnsi,
+	init,
+	write,
+	writeSync,
+	close,
+	flush,
+	stripAnsi,
+	reportLoggerFailure,
 };

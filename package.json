@@ -9,6 +9,9 @@
     "start:auto": "node index.js --auto",
     "rebuild-db": "node index.js rebuild-db",
     "test": "node --test tests",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "valid": "node validators/index.js",
     "save-files": "node utils/save_files.js",
     "export-messages": "node utils/export_messages.js",
@@ -42,5 +45,10 @@
     "inquirer": "^8.2.6",
     "mime-db": "^1.52.0",
     "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "eslint": "^10.2.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.3"
   }
 }

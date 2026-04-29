@@ -1,3 +1,4 @@
+const os = require("os");
 const { TelegramClient } = require("telegram");
 const { Logger } = require("telegram/extensions");
 const { updateCredentials, getCredentials } = require("../utils/file_helper");
@@ -56,8 +57,8 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 	const clientConfig = {
 		connectionRetries: 5,
 		baseLogger: new Logger("error"),
-		deviceModel: "PC",
-		systemVersion: "Windows 11",
+		deviceModel: os.platform() === "win32" ? "PC" : "Desktop",
+		systemVersion: os.release(),
 		appVersion: "4.8.1",
 		langCode: "en",
 		systemLangCode: "en",

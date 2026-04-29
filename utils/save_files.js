@@ -117,24 +117,9 @@ function createChannelSnapshot(channelName, channelPath) {
 
 // Run if executed directly
 if (require.main === module) {
+    const { parseRuntimeOptions } = require("./cli_utils");
     const args = process.argv.slice(2);
-    const takeOptionValue = (optionName) => {
-        const optionIndex = args.indexOf(optionName);
-        if (optionIndex === -1) {
-            return undefined;
-        }
-
-        const optionValue = args[optionIndex + 1];
-        args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
-        return optionValue;
-    };
-
-    paths.configure({
-        root: takeOptionValue("--root"),
-        exportDir: takeOptionValue("--export-dir"),
-        configFile: takeOptionValue("--config-file"),
-        logsDir: takeOptionValue("--logs-dir"),
-    });
+    parseRuntimeOptions(args);
 
     const exportDirArg = args[0]
         ? path.resolve(args[0])

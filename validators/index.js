@@ -630,18 +630,6 @@ async function runValidation(options = {}) {
 }
 
 /**
- * Escape path for Windows command line
- * @param {string} filePath
- * @returns {string}
- */
-function escapePathForCmd(filePath) {
-    // Replace single quotes with double quotes for Windows
-    let escaped = filePath.replace(/'/g, "''");
-    // Wrap in double quotes
-    return `"${escaped}"`;
-}
-
-/**
  * Parse command line arguments
  * @returns {Object}
  */
@@ -707,7 +695,6 @@ module.exports = {
     getFFmpegPaths,
     validateFile,
     validateVideoDeep,
-    escapePathForCmd
 };
 
 // Run if executed directly

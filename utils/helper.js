@@ -285,7 +285,7 @@ const loadSnapshots = (channelPath) => {
 					}
 				}
 			} catch (e) {
-				// Skip invalid JSON files
+				logMessage.warn(`Skipping invalid snapshot file: ${file} (${e.message})`);
 			}
 		}
 	} catch (e) {

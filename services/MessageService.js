@@ -120,25 +120,15 @@ class MessageService {
                 logMessage.info(`Total messages in channel: ${totalMessagesInChannel}`);
             }
 
-            db.saveMessages(channelId, outputFolder, messages, []);
-            
-            const fetchPercent = messages.total > 0 ? Math.round((totalFetched * 100) / messages.total) : 100;
-            logMessage.info(`Fetched ${totalFetched}/${messages.total} messages (${fetchPercent}%)`);
-
-            if (messages.length === 0) {
-                logMessage.success(`Done with all messages (${totalFetched}) 100%`);
-                break;
-            }
-
-            // Фильтрация и обработка сообщений
+            // Сохраняем все сообщения одним вызовом
             const processedMessages = [];
             const filteredMessages = messages.filter(msg => msg.message != undefined || msg.media != undefined);
-            
+
             for (const message of filteredMessages) {
                 const processed = this.processMessage(message, outputFolder, channelId);
                 if (processed) {
                     processedMessages.push(processed);
-                    
+
                     // Статистика
                     if (processed.isMedia) {
                         stats.totalMediaFound++;
@@ -146,8 +136,15 @@ class MessageService {
                 }
             }
 
-            // Сохраняем обработанные сообщения
-            db.saveMessages(channelId, outputFolder, [], processedMessages);
+            db.saveMessages(channelId, outputFolder, messages, processedMessages);
+
+            const fetchPercent = messages.total > 0 ? Math.round((totalFetched * 100) / messages.total) : 100;
+            logMessage.info(`Fetched ${totalFetched}/${messages.total} messages (${fetchPercent}%)`);
+
+            if (messages.length === 0) {
+                logMessage.success(`Done with all messages (${totalFetched}) 100%`);
+                break;
+            }
 
             // Callback для обработки пачки
             if (onBatch) {

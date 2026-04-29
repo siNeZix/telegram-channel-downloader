@@ -1,29 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 const paths = require("./utils/paths");
+const { parseRuntimeOptions } = require("./utils/cli_utils");
 
 // Check if running validator mode
 const args = process.argv.slice(2);
 
-const takeOptionValue = (optionName) => {
-  const optionIndex = args.indexOf(optionName);
-  if (optionIndex === -1) {
-    return undefined;
-  }
-
-  const optionValue = args[optionIndex + 1];
-  args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
-  return optionValue;
-};
-
-const runtimeOptions = {
-  root: takeOptionValue("--root"),
-  exportDir: takeOptionValue("--export-dir"),
-  configFile: takeOptionValue("--config-file"),
-  logsDir: takeOptionValue("--logs-dir"),
-};
-
-paths.configure(runtimeOptions);
+parseRuntimeOptions(args);
 
 const appPaths = {
   exportPath: paths.export,
@@ -126,6 +109,25 @@ process.on('SIGTERM', () => {
       process.exit(143);
     });
 });
+
+process.on('uncaughtException', (err) => {
+  const msg = `[FATAL] Uncaught exception: ${err?.message || String(err)}\n${err?.stack || ''}`;
+  logger.writeSync('error', msg);
+  shutdown(1).catch(() => {
+    logger.close();
+    process.exit(1);
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ''}`;
+  logger.writeSync('error', msg);
+  shutdown(1).catch(() => {
+    logger.close();
+    process.exit(1);
+  });
+});
+
 const {
   booleanInput,
   downloadOptionInput,
@@ -133,7 +135,6 @@ const {
   selectInput,
 } = require("./utils/input_helper");
 
-const channelId = "";
 const downloadableFiles = {
   webpage: true,
   poll: true,
@@ -387,9 +388,12 @@ const autoChannelId = (() => {
 
       case "listen":
         await startChannelListener(client, null, appPaths);
-        // Keep the process running for listening mode
         logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
-        await new Promise(() => {}); // Infinite wait
+        await new Promise((resolve) => {
+          const sigint = () => resolve();
+          process.once("SIGINT", sigint);
+          process.once("SIGTERM", sigint);
+        });
         break;
 
       case "download_ids":

@@ -105,14 +105,14 @@ class DownloadManager {
     /**
      * Скачать медиа из сообщения
      */
-    async downloadMedia(message, mediaPath, floodState, channelId, outputFolder) {
+    async downloadMedia(message, mediaPath, floodState, channelId, outputFolder, ffmpegPaths, deepValidation) {
         const msgId = message?.id;
         const mediaType = message?.media ? getMediaType(message) : "none";
         const expectedSize = getExpectedMediaSize(message);
         const validationService = new ValidationService({
             channelId,
             outputFolder,
-            ffmpegPaths: this.ffmpegPaths,
+            ffmpegPaths,
         });
         const maxAttempts = Math.max(1, config.get("download.maxValidationRetries", DEFAULT_DOWNLOAD_RETRY_ATTEMPTS));
         const retryDelaySeconds = Math.max(0, config.get("download.retryDelaySeconds", DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS));
@@ -161,7 +161,7 @@ class DownloadManager {
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 fileSize = await this.performSingleDownloadAttempt(message, downloadTargetPath, finalValidationPath, floodState, msgId);
                 validationResult = await validationService.validateMediaFile(downloadTargetPath, mediaType, {
-                    deepValidation: this.deepValidation,
+                    deepValidation,
                     expectedSize,
                 });
 
@@ -243,7 +243,7 @@ class DownloadManager {
                                 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                                     fileSize = await this.performSingleDownloadAttempt(refreshedMessage, downloadTargetPath, finalValidationPath, floodState, msgId);
                                     validationResult = await validationService.validateMediaFile(downloadTargetPath, mediaType, {
-                                        deepValidation: this.deepValidation,
+                                        deepValidation,
                                         expectedSize,
                                     });
 
@@ -347,13 +347,13 @@ class DownloadManager {
     /**
      * Удалить невалидный файл
      */
-    async deleteInvalidFile(mediaPath) {
+    async deleteInvalidFile(mediaPath, channelId, outputFolder, ffmpegPaths) {
         try {
-            const validationService = new ValidationService({ channelId: this.channelId, outputFolder: this.outputFolder, ffmpegPaths: this.ffmpegPaths });
+            const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths });
             if (fs.existsSync(mediaPath)) {
                 if (config.get("download.quarantineInvalidFiles", true)) {
                     const quarantineResult = await validationService.quarantineFile(mediaPath, "existing file validation failed", {
-                        channelId: this.channelId,
+                        channelId,
                         originalTargetPath: mediaPath,
                     });
                     if (!quarantineResult?.ok) {
@@ -384,11 +384,6 @@ class DownloadManager {
             downloadableFiles
         } = context;
 
-        this.channelId = channelId;
-        this.outputFolder = outputFolder;
-        this.ffmpegPaths = ffmpegPaths;
-        this.deepValidation = deepValidation;
-
         logMessage.dl(`[DL] processMessageBatch: channelId=${channelId}, messageCount=${messages.length}`);
         
         // Подсчет файлов для скачивания
@@ -408,16 +403,10 @@ class DownloadManager {
         let skippedByTextFilter = 0;
         let totalBytesDownloaded = 0;
         
-        const progressLogger = new ProgressLogger({
-            maxParallel: floodState.getParallelLimit(),
-            channelId,
-        });
-
-        // Debug: Track timing for validation vs other operations
-        let validationCount = 0;
-        let validationTotalMs = 0;
-        let checkExistTotalMs = 0;
-        const checkExistStart = Date.now();
+        const batchChannelId = channelId;
+        const batchOutputFolder = outputFolder;
+        const batchFFmpegPaths = ffmpegPaths;
+        const batchDeepValidation = deepValidation;
         
         // First pass: check file existence (fast operation)
         const filesToValidate = [];
@@ -527,7 +516,7 @@ class DownloadManager {
                     logMessage.warn(`[VALID] File failed validation: ${path.basename(fileInfo.mediaPath)} - ${errorEntry.error}`);
                     logMessage.info(`[VALID] Will re-download: ${path.basename(fileInfo.mediaPath)}`);
                     fileInfo.message._fileExist = false;
-                    await this.deleteInvalidFile(fileInfo.mediaPath);
+                    await this.deleteInvalidFile(fileInfo.mediaPath, channelId, outputFolder, ffmpegPaths);
                     if (channelId && outputFolder) {
                         db.setFileDownloaded(channelId, outputFolder, fileInfo.message.id, 0);
                         db.setValidationState(channelId, outputFolder, fileInfo.message.id, {
@@ -602,7 +591,9 @@ class DownloadManager {
                         mediaPath,
                         floodState,
                         channelId,
-                        outputFolder
+                        outputFolder,
+                        batchFFmpegPaths,
+                        batchDeepValidation
                     )
                     .then((result) => {
                         if (result.success) {
@@ -656,7 +647,9 @@ class DownloadManager {
                 // Управление параллельностью
                 if (this.activeDownloads.size >= floodState.getParallelLimit()) {
                     logMessage.dl(`[DL] Queue full (${floodState.getParallelLimit()}), waiting for free slot`);
-                    await Promise.race(this.activeDownloads);
+                    if (this.activeDownloads.size > 0) {
+                        await Promise.race(this.activeDownloads);
+                    }
                 }
             }
         }

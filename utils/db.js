@@ -413,7 +413,13 @@ const initDatabase = (channelId, outputFolder) => {
 	}
 
 	const startTime = Date.now();
-	const db = new Database(dbPath);
+	let db;
+	try {
+		db = new Database(dbPath);
+	} catch (err) {
+		logMessage().error(`[DB] Failed to open database ${dbPath}: ${err.message}`);
+		throw err;
+	}
 	const initTime = Date.now() - startTime;
 	logMessage().db(`[DB] Database opened in ${initTime}ms: ${dbPath}`);
 
@@ -441,23 +447,34 @@ const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) =
 	logMessage().db(`[DB] saveMessages: channelId=${channelId}, rawCount=${rawMessages.length}, processedCount=${processedMessages.length}`);
 
 	let savedCount = 0;
-	const insertMany = db.transaction((rawBatch, processedBatch) => {
-		for (const rawMessage of rawBatch) {
-			const record = extractRecordFromRawMessage(rawMessage, outputFolder);
-			if (!record) continue;
-			upsert.run(record);
-			savedCount++;
-		}
+	let insertMany;
+	try {
+		insertMany = db.transaction((rawBatch, processedBatch) => {
+			for (const rawMessage of rawBatch) {
+				const record = extractRecordFromRawMessage(rawMessage, outputFolder);
+				if (!record) continue;
+				upsert.run(record);
+				savedCount++;
+			}
 
-		for (const processedMessage of processedBatch) {
-			const record = extractRecordFromProcessedMessage(processedMessage, outputFolder);
-			if (!record) continue;
-			upsert.run(record);
-			savedCount++;
-		}
-	});
+			for (const processedMessage of processedBatch) {
+				const record = extractRecordFromProcessedMessage(processedMessage, outputFolder);
+				if (!record) continue;
+				upsert.run(record);
+				savedCount++;
+			}
+		});
+	} catch (err) {
+		logMessage().error(`[DB] Failed to create transaction in saveMessages: ${err.message}`);
+		throw err;
+	}
 
-	insertMany(rawMessages, processedMessages);
+	try {
+		insertMany(rawMessages, processedMessages);
+	} catch (err) {
+		logMessage().error(`[DB] Transaction failed in saveMessages: ${err.message}`);
+		throw err;
+	}
 	const elapsed = Date.now() - startTime;
 	logMessage().db(`[DB] saveMessages complete: saved=${savedCount}, time=${elapsed}ms`);
 };
@@ -585,15 +602,19 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 
 	let count = 0;
 	const startTime = Date.now();
+	const rawStream = fs.createWriteStream(rawFilePath, { flags: 'a', encoding: 'utf8' });
+	const processedStream = fs.createWriteStream(processedFilePath, { flags: 'a', encoding: 'utf8' });
 	for (const row of getMessagesForExport(channelId, outputFolder, "all")) {
 		if (row.raw_json) {
-			fs.appendFileSync(rawFilePath, row.raw_json + "\n");
+			rawStream.write(row.raw_json + "\n");
 		}
 		if (row.processed_json) {
-			fs.appendFileSync(processedFilePath, row.processed_json + "\n");
+			processedStream.write(row.processed_json + "\n");
 		}
 		count++;
 	}
+	rawStream.end();
+	processedStream.end();
 
 	const elapsed = Date.now() - startTime;
 	logMessage().db(`[DB] exportToJsonFiles: exported ${count} rows in ${elapsed}ms`);
@@ -611,6 +632,7 @@ const closeAllConnections = () => {
 		}
 	}
 	dbConnections.clear();
+	upsertStatements.clear();
 	logMessage().db("[DB] All connections closed");
 };
 
@@ -624,6 +646,7 @@ const closeDatabase = (outputFolder) => {
 		try {
 			dbConnections.get(dbPath).close();
 			dbConnections.delete(dbPath);
+			upsertStatements.delete(dbPath);
 			logMessage().db(`[DB] Connection closed: ${dbPath}, remaining=${dbConnections.size}`);
 		} catch (e) {
 			logMessage().error(`[DB] Error closing database ${dbPath}: ${e.message}`);

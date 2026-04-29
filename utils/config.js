@@ -2,6 +2,16 @@ const fs = require('fs');
 const path = require('path');
 const pathsManager = require('./paths');
 
+let _logger = null;
+const getLogger = () => {
+	if (!_logger) {
+		try {
+			_logger = require('./logger');
+		} catch (e) { /* logger may not be initialized yet */ }
+	}
+	return _logger;
+};
+
 /**
  * Значения конфигурации по умолчанию
  */
@@ -106,7 +116,12 @@ class ConfigManager {
                 this._save();
             }
         } catch (error) {
-            console.error('[CONFIG] Error loading config:', error.message);
+            const logger = getLogger();
+            if (logger) {
+                logger.write('error', `[CONFIG] Error loading config: ${error.message}`);
+            } else {
+                console.error('[CONFIG] Error loading config:', error.message);
+            }
             this.config = this._deepClone(DEFAULTS);
         }
     }
@@ -131,7 +146,12 @@ class ConfigManager {
             );
             fs.renameSync(tempPath, this.configPath);
         } catch (error) {
-            console.error('[CONFIG] Error saving config:', error.message);
+            const logger = getLogger();
+            if (logger) {
+                logger.write('error', `[CONFIG] Error saving config: ${error.message}`);
+            } else {
+                console.error('[CONFIG] Error saving config:', error.message);
+            }
         }
     }
 
@@ -160,7 +180,12 @@ class ConfigManager {
                 watcher.unref();
             }
         } catch (error) {
-            console.error('[CONFIG] Error setting up watcher:', error.message);
+            const logger = getLogger();
+            if (logger) {
+                logger.write('error', `[CONFIG] Error setting up watcher: ${error.message}`);
+            } else {
+                console.error('[CONFIG] Error setting up watcher:', error.message);
+            }
         }
     }
 
@@ -175,7 +200,13 @@ class ConfigManager {
         const changedKeys = this._findChangedKeys(oldConfig, this.config, []);
         
         if (changedKeys.length > 0) {
-            console.log(`[CONFIG] Reloaded. Changed: ${changedKeys.join(', ')}`);
+            const logger = getLogger();
+            const msg = `[CONFIG] Reloaded. Changed: ${changedKeys.join(', ')}`;
+            if (logger) {
+                logger.write('info', msg);
+            } else {
+                console.log(msg);
+            }
             this._notifyListeners(changedKeys);
         }
     }
@@ -233,7 +264,13 @@ class ConfigManager {
             try {
                 listener(changedKeys);
             } catch (error) {
-                console.error('[CONFIG] Listener error:', error.message);
+                const logger = getLogger();
+                const msg = `[CONFIG] Listener error: ${error.message}`;
+                if (logger) {
+                    logger.write('error', msg);
+                } else {
+                    console.error(msg);
+                }
             }
         }
     }
@@ -304,6 +341,7 @@ class ConfigManager {
 // Создаем синглтон
 const configManager = new ConfigManager();
 
+configManager.ConfigManager = ConfigManager;
+configManager.DEFAULTS = DEFAULTS;
+
 module.exports = configManager;
-module.exports.ConfigManager = ConfigManager;
-module.exports.DEFAULTS = DEFAULTS;

@@ -1,4 +1,4 @@
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
@@ -165,7 +165,7 @@ async function findFFmpeg() {
 
 function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 	log.debug(`execPromise: executing command, timeout=${timeout}ms`);
-	
+
 	return new Promise((resolve) => {
 		let settled = false;
 		const startTime = Date.now();
@@ -175,15 +175,49 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 			resolve(result);
 		};
 
+		if (Array.isArray(cmd)) {
+			const [bin, ...args] = cmd;
+			const proc = spawn(bin, args, { timeout, windowsHide: true });
+
+			let stdout = "";
+			let stderr = "";
+
+			proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+			proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+			proc.on("error", (err) => {
+				log.error(`execPromise: process error: ${err.message}`);
+				done({ stdout, stderr, exitCode: 1, timedOut: false });
+			});
+
+			proc.on("close", (exitCode) => {
+				if (settled) return;
+				const elapsed = Date.now() - startTime;
+				log.debug(`execPromise: completed in ${elapsed}ms, exitCode=${exitCode}, stdout.length=${stdout.length}, stderr.length=${stderr.length}`);
+				done({ stdout, stderr, exitCode: exitCode !== null ? exitCode : 0, timedOut: false });
+			});
+
+			const timeoutId = setTimeout(() => {
+				log.error(`execPromise: timeout after ${timeout}ms`);
+				proc.kill("SIGKILL");
+				done({ stdout, stderr, exitCode: 1, timedOut: true });
+			}, timeout);
+
+			proc.on("close", () => clearTimeout(timeoutId));
+			proc.on("error", () => clearTimeout(timeoutId));
+
+			return;
+		}
+
 		const proc = exec(cmd, { timeout }, (error, stdout, stderr) => {
 			if (settled) return;
 			const elapsed = Date.now() - startTime;
 			const exitCode = error && error.killed
 				? 1
 				: (error && error.code !== "SIGTERM" && error.code !== "SIGKILL" ? error.code : 0);
-			
+
 			log.debug(`execPromise: completed in ${elapsed}ms, exitCode=${exitCode}, stdout.length=${stdout?.length || 0}, stderr.length=${stderr?.length || 0}`);
-			
+
 			done({
 				stdout: stdout || "",
 				stderr: stderr || "",
@@ -213,12 +247,10 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 
 async function validateImage(filePath, ffmpegBin) {
 	log.debug(`validateImage: file=${filePath}, ffmpeg=${ffmpegBin}`);
-	
-	const escapedPath = escapePathForCmd(filePath);
-	const escapedFfmpeg = escapePathForCmd(ffmpegBin);
-	const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
-	
-	log.debug(`validateImage: running command: ${cmd}`);
+
+	const cmd = [ffmpegBin, "-v", "error", "-i", filePath, "-f", "null", "-"];
+
+	log.debug(`validateImage: running command: ${cmd.join(" ")}`);
 
 	const result = await execPromise(cmd, VALIDATION_TIMEOUT);
 
@@ -251,12 +283,10 @@ async function validateImage(filePath, ffmpegBin) {
 
 async function validateVideo(filePath, ffprobeBin) {
 	log.debug(`validateVideo: file=${filePath}, ffprobe=${ffprobeBin}`);
-	
-	const escapedPath = escapePathForCmd(filePath);
-	const escapedFfprobe = escapePathForCmd(ffprobeBin);
-	const cmd = `${escapedFfprobe} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ${escapedPath}`;
-	
-	log.debug(`validateVideo: running command: ${cmd}`);
+
+	const cmd = [ffprobeBin, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath];
+
+	log.debug(`validateVideo: running command: ${cmd.join(" ")}`);
 
 	const timeout = getScaledTimeout(filePath, VALIDATION_TIMEOUT);
 	const result = await execPromise(cmd, timeout);
@@ -284,11 +314,9 @@ async function validateVideo(filePath, ffprobeBin) {
 
 async function validateVideoDeep(filePath, ffmpegBin) {
 	log.debug(`validateVideoDeep: file=${filePath}, ffmpeg=${ffmpegBin}`);
-	
-	const escapedPath = escapePathForCmd(filePath);
-	const escapedFfmpeg = escapePathForCmd(ffmpegBin);
-	const cmd = `${escapedFfmpeg} -v error -i ${escapedPath} -f null -`;
-	
+
+	const cmd = [ffmpegBin, "-v", "error", "-i", filePath, "-f", "null", "-"];
+
 	const timeout = getScaledTimeout(filePath, DEEP_DECODE_TIMEOUT);
 	log.debug(`validateVideoDeep: running deep validation command, timeout=${timeout}ms`);
 
