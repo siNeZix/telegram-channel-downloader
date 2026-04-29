@@ -100,8 +100,6 @@ class MessageService {
                 fastForwardMode = false;
             }
 
-            logMessage.info(`Fetching next batch of messages (limit: ${messageLimit}, offset: ${offsetId})...`);
-            
             let messages = await this.floodState.runWithFloodControl(
                 "getMessages",
                 async () => {
@@ -122,10 +120,10 @@ class MessageService {
                 logMessage.info(`Total messages in channel: ${totalMessagesInChannel}`);
             }
 
-            // Сохраняем сырые сообщения в БД
             db.saveMessages(channelId, outputFolder, messages, []);
             
-            logMessage.info(`getting messages (${totalFetched}/${messages.total}): ${Math.round((totalFetched * 100) / messages.total)}%`);
+            const fetchPercent = messages.total > 0 ? Math.round((totalFetched * 100) / messages.total) : 100;
+            logMessage.info(`Fetched ${totalFetched}/${messages.total} messages (${fetchPercent}%)`);
 
             if (messages.length === 0) {
                 logMessage.success(`Done with all messages (${totalFetched}) 100%`);

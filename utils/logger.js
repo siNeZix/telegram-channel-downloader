@@ -5,6 +5,17 @@ const pathsManager = require('./paths');
 let debugStream = null;
 let normalStream = null;
 let initialized = false;
+let consolePatched = false;
+let flushInterval = null;
+const FLUSH_INTERVAL_MS = 5000;
+
+const originalConsole = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    debug: console.debug.bind(console),
+};
 
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 const MAX_ARCHIVE_FILES = 50;
@@ -16,6 +27,48 @@ const DEBUG_ARCHIVE_LOG_REGEX = /^debug-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log
 const MAX_DEBUG_LOG_SIZE_BYTES = 10 * 1024 * 1024;
 
 let lastLogTimestamp = null;
+
+function formatConsoleTimestamp(date) {
+    const h = String(date.getHours()).padStart(2, '0');
+    const mi = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    const ms = String(date.getMilliseconds()).padStart(3, '0');
+    return `[${h}:${mi}:${s}.${ms}]`;
+}
+
+function prefixConsoleArgs(args) {
+    const prefix = formatConsoleTimestamp(new Date());
+
+    if (args.length === 0) {
+        return [prefix];
+    }
+
+    if (typeof args[0] !== 'string') {
+        return [prefix, ...args];
+    }
+
+    const firstArg = args[0];
+    const match = firstArg.match(/^([\r\n]+)(.*)$/s);
+
+    if (!match) {
+        return [`${prefix} ${firstArg}`, ...args.slice(1)];
+    }
+
+    const [, leadingWhitespace, rest] = match;
+    return [`${leadingWhitespace}${prefix} ${rest}`, ...args.slice(1)];
+}
+
+function installConsoleTimestamps() {
+    if (consolePatched) {
+        return;
+    }
+
+    for (const method of Object.keys(originalConsole)) {
+        console[method] = (...args) => originalConsole[method](...prefixConsoleArgs(args));
+    }
+
+    consolePatched = true;
+}
 
 function stripAnsi(str) {
     return str.replace(ANSI_REGEX, '');
@@ -111,6 +164,8 @@ function cleanupOldDebugArchives() {
 }
 
 function init() {
+    installConsoleTimestamps();
+
     if (initialized && debugStream && normalStream) return;
 
     const logsDir = pathsManager.logs;
@@ -142,8 +197,20 @@ function init() {
     debugStream = fs.createWriteStream(debugLogPath, { flags: 'a', encoding: 'utf8' });
     normalStream = fs.createWriteStream(currentLogPath, { flags: 'a', encoding: 'utf8' });
 
-    debugStream.on('error', (err) => reportLoggerFailure(err, 'debug stream error'));
-    normalStream.on('error', (err) => reportLoggerFailure(err, 'current stream error'));
+    const ds = debugStream;
+    const ns = normalStream;
+    ds.on('error', (err) => {
+        reportLoggerFailure(err, 'debug stream error');
+        if (debugStream === ds) { debugStream = null; initialized = false; }
+    });
+    ns.on('error', (err) => {
+        reportLoggerFailure(err, 'current stream error');
+        if (normalStream === ns) { normalStream = null; initialized = false; }
+    });
+
+    if (flushInterval) clearInterval(flushInterval);
+    flushInterval = setInterval(flush, FLUSH_INTERVAL_MS);
+    flushInterval.unref();
 
     initialized = true;
 }
@@ -151,6 +218,11 @@ function init() {
 function write(level, message) {
     if (!initialized || !debugStream || !normalStream) {
         init();
+    }
+
+    if (!debugStream || !normalStream) {
+        reportLoggerFailure(new Error('Logger streams unavailable after init'), 'write skipped');
+        return;
     }
 
     const cleanMessage = stripAnsi(message);
@@ -218,6 +290,10 @@ function writeSync(level, message) {
 }
 
 function close() {
+    if (flushInterval) {
+        clearInterval(flushInterval);
+        flushInterval = null;
+    }
     if (debugStream) {
         try { debugStream.end(); } catch (e) { reportLoggerFailure(e, 'Failed to close debug stream'); }
         debugStream = null;
@@ -246,6 +322,10 @@ process.on('uncaughtException', (err) => {
     const msg = `[FATAL] Uncaught exception: ${err?.message || String(err)}\n${err?.stack || ''}`;
     writeSync('error', msg);
     console.error(msg);
+    try {
+        const { cancelAllDownloads } = require('../services/DownloadManager');
+        cancelAllDownloads();
+    } catch (e) { /* best effort */ }
     close();
     process.exit(1);
 });
@@ -254,9 +334,15 @@ process.on('unhandledRejection', (reason) => {
     const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ''}`;
     writeSync('error', msg);
     console.error(msg);
+    try {
+        const { cancelAllDownloads } = require('../services/DownloadManager');
+        cancelAllDownloads();
+    } catch (e) { /* best effort */ }
     close();
     process.exit(1);
 });
+
+installConsoleTimestamps();
 
 module.exports = {
     init,

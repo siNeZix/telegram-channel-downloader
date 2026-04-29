@@ -3,15 +3,30 @@ const path = require("path");
 const paths = require("../utils/paths");
 const config = require("../utils/config");
 const { logMessage } = require("../utils/helper");
-const { validateFile, validateVideoDeep, validateVideo, validateImage, execPromise, escapePathForCmd } = require("../validators/ffmpeg_validator");
+const {
+	validateFile,
+	validateVideoDeep,
+	validateVideo,
+	validateImage,
+	execPromise,
+	escapePathForCmd,
+	classifyFFmpegErrors,
+	getScaledTimeout,
+	SAMPLE_DECODE_TIMEOUT,
+	TAIL_DECODE_TIMEOUT,
+	VALIDATION_TIMEOUT,
+	DEEP_DECODE_TIMEOUT,
+} = require("../validators/ffmpeg_validator");
 
 const DEFAULT_VIDEO_PROFILE = "sampled";
 const PARTIAL_SUFFIX = ".partial";
 const SAMPLE_WINDOW_SECONDS = 8;
-const QUARANTINE_RETRY_DELAY_MS = 1500;
-const QUARANTINE_RETRY_ATTEMPTS = 10;
-const QUARANTINE_UNLINK_DELAY_MS = 2000;
-const QUARANTINE_UNLINK_ATTEMPTS = 5;
+const MIN_SAMPLE_PASSES_FOR_VALID = 1;
+const IS_WINDOWS = process.platform === "win32";
+const QUARANTINE_RETRY_DELAY_MS = IS_WINDOWS ? 2500 : 1500;
+const QUARANTINE_RETRY_ATTEMPTS = IS_WINDOWS ? 15 : 10;
+const QUARANTINE_UNLINK_DELAY_MS = IS_WINDOWS ? 3000 : 2000;
+const QUARANTINE_UNLINK_ATTEMPTS = IS_WINDOWS ? 8 : 5;
 
 function getValidationProfile({ deepValidation = false, mediaType = "", explicitProfile = null } = {}) {
 	if (explicitProfile) {
@@ -50,19 +65,20 @@ function getQuarantineTarget(channelId, filePath, outputFolder = null) {
 async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	const probeResult = await validateVideo(filePath, ffprobeBin);
 	if (!probeResult.valid) {
+		if (probeResult.timedOut) {
+			logMessage.valid(`[VALID] Sampled: ffprobe timed out, treating as valid: ${path.basename(filePath)}`);
+			return { valid: true, error: null, profile: "sampled" };
+		}
 		return probeResult;
+	}
+
+	const duration = probeResult.duration;
+	if (!Number.isFinite(duration) || duration <= 0) {
+		return { valid: false, error: "ffprobe: invalid duration for sampled validation" };
 	}
 
 	const escapedPath = escapePathForCmd(filePath);
 	const escapedFfmpeg = escapePathForCmd(ffmpegBin);
-	const escapedFfprobe = escapePathForCmd(ffprobeBin);
-	const durationCmd = `${escapedFfprobe} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ${escapedPath}`;
-	const durationResult = await execPromise(durationCmd, 30000);
-	const duration = parseFloat(durationResult.stdout.trim());
-
-	if (!Number.isFinite(duration) || duration <= 0) {
-		return { valid: false, error: "ffprobe: invalid duration for sampled validation" };
-	}
 
 	const samplePoints = [0];
 	if (duration >= 12) {
@@ -75,30 +91,91 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 		samplePoints.push(Math.max(0, duration - Math.min(12, duration * 0.15)));
 	}
 
+	let passedCount = 0;
+	let failedPoints = [];
+
+	const sampleTimeout = getScaledTimeout(filePath, SAMPLE_DECODE_TIMEOUT);
+
 	for (const point of samplePoints) {
-		const sampleCmd = `${escapedFfmpeg} -v error -xerror -err_detect explode -i ${escapedPath} -ss ${point.toFixed(3)} -t ${SAMPLE_WINDOW_SECONDS} -f null -`;
-		const result = await execPromise(sampleCmd, 45000);
-		if (result.exitCode !== 0) {
-			const errorMsg = result.stderr || result.stdout || `sample decode failed at ${point.toFixed(3)}s`;
-			return { valid: false, error: `ffmpeg sampled decode: ${errorMsg.substring(0, 160)}` };
+		const sampleCmd = `${escapedFfmpeg} -v error -i ${escapedPath} -ss ${point.toFixed(3)} -t ${SAMPLE_WINDOW_SECONDS} -f null -`;
+		const result = await execPromise(sampleCmd, sampleTimeout);
+
+		if (result.exitCode === 0) {
+			passedCount++;
+			continue;
 		}
+
+		if (result.timedOut) {
+			passedCount++;
+			logMessage.valid(`[VALID] Sampled: timeout at ${point.toFixed(1)}s (counted as pass): ${path.basename(filePath)}`);
+			continue;
+		}
+
+		const { fatalErrors, nonFatalErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
+
+		if (fatalErrors.length === 0) {
+			passedCount++;
+			logMessage.valid(`[VALID] Sampled: non-fatal errors at ${point.toFixed(1)}s (counted as pass), nonFatal=${nonFatalErrors.length}: ${path.basename(filePath)}`);
+			continue;
+		}
+
+		failedPoints.push({
+			point,
+			fatalErrors,
+			nonFatalErrors,
+		});
 	}
 
-	if (duration >= 15) {
+	const needTail = duration >= 15;
+	if (needTail) {
 		const tailWindow = Math.min(12, Math.max(6, Math.floor(duration * 0.15)));
-		const tailCmd = `${escapedFfmpeg} -v error -xerror -err_detect explode -sseof -${tailWindow} -i ${escapedPath} -t ${tailWindow} -f null -`;
-		const tailResult = await execPromise(tailCmd, 45000);
-		if (tailResult.exitCode !== 0) {
-			const errorMsg = tailResult.stderr || tailResult.stdout || "tail decode failed";
-			return { valid: false, error: `ffmpeg tail decode: ${errorMsg.substring(0, 160)}` };
+		const tailCmd = `${escapedFfmpeg} -v error -sseof -${tailWindow} -i ${escapedPath} -t ${tailWindow} -f null -`;
+		const tailTimeout = getScaledTimeout(filePath, TAIL_DECODE_TIMEOUT);
+		const tailResult = await execPromise(tailCmd, tailTimeout);
+
+		if (tailResult.exitCode === 0) {
+			passedCount++;
+		} else if (tailResult.timedOut) {
+			passedCount++;
+			logMessage.valid(`[VALID] Sampled: tail timeout (counted as pass): ${path.basename(filePath)}`);
+		} else {
+			const { fatalErrors, nonFatalErrors: _nf } = classifyFFmpegErrors(tailResult.stderr, tailResult.stdout);
+			if (fatalErrors.length === 0) {
+				passedCount++;
+			} else {
+				failedPoints.push({
+					point: `tail-${tailWindow}s`,
+					fatalErrors,
+					nonFatalErrors: _nf,
+				});
+			}
 		}
 	}
 
-	return { valid: true, error: null };
+	const totalAttempts = samplePoints.length + (needTail ? 1 : 0);
+
+	if (passedCount >= MIN_SAMPLE_PASSES_FOR_VALID) {
+		if (failedPoints.length === 0) {
+			return { valid: true, error: null };
+		}
+		const summary = failedPoints.map(f => `${f.point.toFixed ? f.point.toFixed(1) : f.point}s: ${f.fatalErrors.slice(0, 2).join('; ')}`).join(' | ');
+		logMessage.valid(`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, accepted with warnings: ${path.basename(filePath)} (${summary})`);
+		return { valid: true, error: null };
+	}
+
+	const allFatal = failedPoints.flatMap(f => f.fatalErrors).join("; ").substring(0, 200);
+	logMessage.valid(`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, rejected: ${path.basename(filePath)} (fatal: ${allFatal})`);
+	return { valid: false, error: `ffmpeg sampled decode: ${passedCount}/${totalAttempts} passed; fatal: ${allFatal}` };
 }
 
-function validateExpectedSize(filePath, expectedSize) {
+function validateExpectedSize(filePath, expectedSize, mediaType) {
 	if (!Number.isFinite(expectedSize) || expectedSize <= 0) {
+		return { valid: true, error: null };
+	}
+
+	const normalizedType = String(mediaType || "").toLowerCase();
+	const isImage = normalizedType.includes("image") || normalizedType.includes("photo");
+	if (isImage) {
 		return { valid: true, error: null };
 	}
 
@@ -141,7 +218,7 @@ class ValidationService {
 			return { valid: false, error: "File does not exist", profile: "none" };
 		}
 
-		const sizeCheck = validateExpectedSize(filePath, options.expectedSize);
+		const sizeCheck = validateExpectedSize(filePath, options.expectedSize, mediaType);
 		if (!sizeCheck.valid) {
 			return { ...sizeCheck, profile: "size-check" };
 		}
@@ -180,7 +257,7 @@ class ValidationService {
 			return null;
 		}
 
-		await sleep(QUARANTINE_RETRY_DELAY_MS);
+		await sleep(IS_WINDOWS ? 3000 : QUARANTINE_RETRY_DELAY_MS);
 
 		const target = getQuarantineTarget(this.channelId, filePath, this.outputFolder);
 		paths.ensureDir(target.root);

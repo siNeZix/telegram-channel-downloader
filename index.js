@@ -73,6 +73,7 @@ const { searchDialog, selectDialog, getDialogName, getAllDialogs} = require("./m
 const { logMessage, MEDIA_TYPES } = require("./utils/helper");
 const logger = require("./utils/logger");
 const db = require("./utils/db");
+const { cancelAllDownloads } = require("./services/DownloadManager");
 
 logger.init();
 
@@ -89,6 +90,8 @@ const shutdown = async (exitCode, reason = null) => {
   if (reason) {
     logger.writeSync("info", reason);
   }
+
+  cancelAllDownloads();
 
   if (client && typeof client.disconnect === "function") {
     try {

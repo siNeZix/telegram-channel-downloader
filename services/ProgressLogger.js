@@ -1,4 +1,5 @@
 const PROGRESS_LOG_INTERVAL_SECONDS = 5;
+const CHECK_PROGRESS_PERCENT_MILESTONES = [25, 50, 75, 100];
 
 const formatEta = (totalSeconds) => {
     if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
@@ -20,9 +21,6 @@ const formatBytes = (bytes) => {
     return `${mb.toFixed(2)} MB`;
 };
 
-/**
- * Сервис для логирования прогресса загрузки
- */
 class ProgressLogger {
     constructor(options = {}) {
         this.downloadStartedAt = Date.now();
@@ -33,36 +31,31 @@ class ProgressLogger {
         this.failedDownloads = 0;
         this.activeDownloads = 0;
         this.maxParallel = options.maxParallel || 20;
+        this.channelId = options.channelId || null;
+        this.totalBytesDownloaded = 0;
+        this._lastMilestonePercent = 0;
     }
 
-    /**
-     * Обновить статистику
-     */
     updateStats(stats) {
         if (stats.totalFiles !== undefined) this.totalFiles = stats.totalFiles;
         if (stats.successful !== undefined) this.successfulDownloads = stats.successful;
         if (stats.failed !== undefined) this.failedDownloads = stats.failed;
         if (stats.active !== undefined) this.activeDownloads = stats.active;
+        if (stats.bytesDownloaded !== undefined) this.totalBytesDownloaded = stats.bytesDownloaded;
     }
 
-    /**
-     * Рассчитать и залогировать прогресс загрузки
-     */
     logDownloadProgress() {
         const { logMessage } = require('../utils/helper');
-        
+
         const finished = this.successfulDownloads + this.failedDownloads;
         const percent = this.totalFiles > 0 ? Math.round((finished * 100) / this.totalFiles) : 100;
 
-        // Средняя скорость за всё время
         const elapsedSec = (Date.now() - this.downloadStartedAt) / 1000;
         const overallRate = elapsedSec > 0 ? finished / elapsedSec : 0;
 
-        // Средняя скорость за последние 10 секунд (в МБ/с)
         const now = Date.now();
         const tenSecondsAgo = now - 10000;
 
-        // Удаляем старые записи
         while (
             this.speedHistory.length > 0 &&
             this.speedHistory[0].timestamp < tenSecondsAgo
@@ -70,16 +63,14 @@ class ProgressLogger {
             this.speedHistory.shift();
         }
 
-        // Добавляем текущую точку
         this.speedHistory.push({
             timestamp: now,
             completed: finished,
-            bytes: 0, // Will be set by caller
+            bytes: this.totalBytesDownloaded,
         });
 
-        // Рассчитываем скорость за последние 10 секунд
-        let recentRate = 0; // файлов/с
-        let recentBytesRate = 0; // байт/с
+        let recentRate = 0;
+        let recentBytesRate = 0;
         if (this.speedHistory.length >= 2) {
             const firstPoint = this.speedHistory[0];
             const lastPoint = this.speedHistory[this.speedHistory.length - 1];
@@ -99,19 +90,21 @@ class ProgressLogger {
 
         const speedMBs = recentBytesRate / (1024 * 1024);
         const speedText = this.speedHistory.length >= 2
-            ? `${speedMBs.toFixed(2)} MB/s (avg 10s)`
-            : `${(recentBytesRate / (1024 * 1024) / Math.max(elapsedSec, 1)).toFixed(2)} MB/s (overall)`;
+            ? `${speedMBs.toFixed(2)} MB/s`
+            : `${(this.totalBytesDownloaded / (1024 * 1024) / Math.max(elapsedSec, 1)).toFixed(2)} MB/s`;
 
-        // Добавляем временную метку и состояние очереди
-        const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
-        logMessage.info(
-            `[${timestamp}] [DL] [Queue: ${this.activeDownloads}/${this.maxParallel}] Download progress: ${finished}/${this.totalFiles} (${percent}%), failed: ${this.failedDownloads}, speed: ${speedText}, ETA: ${eta}`
-        );
+        const parts = [
+            `[DL] Download: ${finished}/${this.totalFiles} (${percent}%)`,
+            `✓${this.successfulDownloads} ✗${this.failedDownloads}`,
+            `queue: ${this.activeDownloads}/${this.maxParallel}`,
+            `${speedText}`,
+            `ETA: ${eta}`,
+        ];
+        if (this.channelId) parts.push(`ch=${this.channelId}`);
+
+        logMessage.info(parts.join(' | '));
     }
 
-    /**
-     * Проверить, нужно ли логировать прогресс
-     */
     shouldLogProgress() {
         const now = Date.now();
         const finished = this.successfulDownloads + this.failedDownloads;
@@ -119,16 +112,10 @@ class ProgressLogger {
                now - this.lastProgressLogAt >= PROGRESS_LOG_INTERVAL_SECONDS * 1000;
     }
 
-    /**
-     * Записать время последнего логирования
-     */
     markLogged() {
         this.lastProgressLogAt = Date.now();
     }
 
-    /**
-     * Сбросить состояние
-     */
     reset() {
         this.downloadStartedAt = Date.now();
         this.lastProgressLogAt = 0;
@@ -137,20 +124,39 @@ class ProgressLogger {
         this.successfulDownloads = 0;
         this.failedDownloads = 0;
         this.activeDownloads = 0;
+        this.totalBytesDownloaded = 0;
+        this._lastMilestonePercent = 0;
     }
 
-    /**
-     * Логирование прогресса проверки файлов
-     */
-    static logCheckProgress(checked, total, skipped, newFiles, startedAt) {
+    static logCheckProgress(checked, total, skipped, newFiles, startedAt, channelId = null) {
         const { logMessage } = require('../utils/helper');
-        
+
         const percent = total > 0 ? Math.round((checked * 100) / total) : 100;
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-        const timestamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
-        logMessage.info(
-            `[${timestamp}] [DL] Check progress: ${checked}/${total} (${percent}%), skipped: ${skipped}, new: ${newFiles}, elapsed: ${elapsed}s`
-        );
+        const parts = [
+            `[DL] Check: ${checked}/${total} (${percent}%)`,
+            `skipped: ${skipped}, new: ${newFiles}`,
+            `${elapsed}s`,
+        ];
+        if (channelId) parts.push(`ch=${channelId}`);
+
+        logMessage.info(parts.join(' | '));
+    }
+
+    static shouldLogCheckProgress(checked, total, lastLogAt, intervalMs = 5000) {
+        const now = Date.now();
+        if (total <= 0) return false;
+
+        if (checked === total) return true;
+
+        const percent = Math.round((checked * 100) / total);
+        for (const milestone of CHECK_PROGRESS_PERCENT_MILESTONES) {
+            if (percent >= milestone && milestone > Math.round(((checked - 1) * 100) / total)) {
+                return true;
+            }
+        }
+
+        return now - lastLogAt >= intervalMs;
     }
 }
 

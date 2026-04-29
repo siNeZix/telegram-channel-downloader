@@ -15,7 +15,7 @@ const {
     downloadState,
     initDownloadState
 } = require("../utils/helper");
-const { createFloodState } = require("./FloodControl");
+const { createFloodState, isFileReferenceExpired: isFileRefExpired } = require("./FloodControl");
 const { ProgressLogger } = require("./ProgressLogger");
 const { TelegramEntityResolver } = require("./TelegramEntityResolver");
 const { ValidationService } = require("./ValidationService");
@@ -23,14 +23,12 @@ const { ValidationService } = require("./ValidationService");
 const DEFAULT_DOWNLOAD_RETRY_ATTEMPTS = 3;
 const DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS = 2;
 const LARGE_FILE_RETRY_THRESHOLD_BYTES = 128 * 1024 * 1024;
+const FILE_REF_EXPIRED_MAX_RETRIES = 3;
 
 function isRetryableValidationError(error = "") {
     const normalized = String(error || "").toLowerCase();
     return normalized.includes("size mismatch") ||
-        normalized.includes("sample decode failed") ||
-        normalized.includes("invalid nal unit size") ||
-        normalized.includes("missing picture in access unit") ||
-        normalized.includes("corrupt input packet") ||
+        normalized.includes("ffmpeg sampled decode") ||
         normalized.includes("ffprobe exit code") ||
         normalized.includes("no duration found") ||
         normalized.includes("invalid duration");
@@ -52,11 +50,15 @@ function shouldRetryDownload(validationError, expectedSize, observedSize = null)
 /**
  * Сервис для управления загрузкой файлов
  */
+const activeManagers = new Set();
+
 class DownloadManager {
     constructor(client) {
         this.client = client;
         this.activeDownloads = new Set();
+        this.activePartialPaths = new Set();
         this.entityResolver = new TelegramEntityResolver(client);
+        activeManagers.add(this);
         logMessage.dl(`[DL] DownloadManager created, client type: ${typeof client}`);
     }
 
@@ -112,7 +114,14 @@ class DownloadManager {
             outputFolder,
             ffmpegPaths: this.ffmpegPaths,
         });
+        const maxAttempts = Math.max(1, config.get("download.maxValidationRetries", DEFAULT_DOWNLOAD_RETRY_ATTEMPTS));
+        const retryDelaySeconds = Math.max(0, config.get("download.retryDelaySeconds", DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS));
         let partialPath = null;
+        let finalValidationPath = mediaPath;
+        let downloadTargetPath = null;
+        let fileSize = 0;
+        let validationResult = null;
+        let lastValidationError = null;
         
         logMessage.dl(`[DL] downloadMedia: msgId=${msgId}, type=${mediaType}, path=${mediaPath}`);
         
@@ -133,12 +142,13 @@ class DownloadManager {
                 mediaPath = path.join(mediaPath, `../${message?.media?.webpage?.id}_image.jpeg`);
             }
 
-            const finalValidationPath = mediaPath;
+            finalValidationPath = mediaPath;
             partialPath = validationService.getPartialPath(finalValidationPath);
-            const downloadTargetPath = partialPath;
+            downloadTargetPath = partialPath;
             paths.ensureDir(path.dirname(downloadTargetPath));
             this.removeFileIfExists(downloadTargetPath, "stale partial");
             this.removeFileIfExists(finalValidationPath, "stale target");
+            this.activePartialPaths.add(downloadTargetPath);
 
             // Обработка poll
             if (message.media.poll) {
@@ -147,13 +157,6 @@ class DownloadManager {
                 logMessage.dl(`[DL] Saving poll data for msgId=${msgId}`);
                 fs.writeFileSync(pollPath, circularStringify(message.media.poll, null, 2));
             }
-
-            const maxAttempts = Math.max(1, config.get("download.maxValidationRetries", DEFAULT_DOWNLOAD_RETRY_ATTEMPTS));
-            const retryDelaySeconds = Math.max(0, config.get("download.retryDelaySeconds", DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS));
-
-            let fileSize = 0;
-            let validationResult = null;
-            let lastValidationError = null;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 fileSize = await this.performSingleDownloadAttempt(message, downloadTargetPath, finalValidationPath, floodState, msgId);
@@ -184,6 +187,7 @@ class DownloadManager {
             }
 
             if (!validationResult?.valid) {
+                this.activePartialPaths.delete(downloadTargetPath);
                 this.removeFileIfExists(downloadTargetPath, "invalid partial");
                 this.removeFileIfExists(finalValidationPath, "invalid target");
 
@@ -205,6 +209,7 @@ class DownloadManager {
             }
 
             fileSize = validationService.finalizeValidatedDownload(downloadTargetPath, finalValidationPath);
+            this.activePartialPaths.delete(downloadTargetPath);
 
             // Отмечаем файл как скачанный в БД
             if (channelId && outputFolder) {
@@ -220,12 +225,96 @@ class DownloadManager {
 
             return { success: true, fileSize, validationProfile: validationResult.profile };
         } catch (err) {
+            const isFileRefExpired = err?._isFileReferenceExpired || isFileRefExpired(err);
+            if (isFileRefExpired && channelId && this.entityResolver) {
+                logMessage.warn(`[DL] FILE_REFERENCE_EXPIRED for msgId=${msgId}, will re-fetch message and retry`);
+                let refreshedMessage = null;
+                for (let refetchAttempt = 1; refetchAttempt <= FILE_REF_EXPIRED_MAX_RETRIES; refetchAttempt++) {
+                    try {
+                        const inputPeer = await this.entityResolver.resolve(channelId);
+                        const freshMessages = await floodState.runWithFloodControl(
+                            `refetchMessage-msg${msgId}`,
+                            async () => this.client.getMessages(inputPeer, { ids: [msgId] })
+                        );
+                        if (freshMessages && freshMessages.length > 0 && freshMessages[0]?.media) {
+                            refreshedMessage = freshMessages[0];
+                            logMessage.warn(`[DL] Re-fetched message msgId=${msgId} (attempt ${refetchAttempt}), retrying download`);
+                            try {
+                                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                                    fileSize = await this.performSingleDownloadAttempt(refreshedMessage, downloadTargetPath, finalValidationPath, floodState, msgId);
+                                    validationResult = await validationService.validateMediaFile(downloadTargetPath, mediaType, {
+                                        deepValidation: this.deepValidation,
+                                        expectedSize,
+                                    });
+
+                                    if (validationResult.valid) {
+                                        break;
+                                    }
+
+                                    lastValidationError = validationResult.error;
+                                    this.removeFileIfExists(downloadTargetPath, "invalid partial after refetch");
+
+                                    if (attempt >= maxAttempts || !shouldRetryDownload(validationResult.error, expectedSize, fileSize)) {
+                                        break;
+                                    }
+
+                                    logMessage.warn(
+                                        `[DL] Retrying download (after refetch) for msgId=${msgId} after validation failure ` +
+                                        `(${attempt}/${maxAttempts}): ${validationResult.error}`
+                                    );
+
+                                    if (retryDelaySeconds > 0) {
+                                        await floodState.waitFn(retryDelaySeconds);
+                                    }
+                                }
+
+                                if (validationResult?.valid) {
+                                    fileSize = validationService.finalizeValidatedDownload(downloadTargetPath, finalValidationPath);
+                                    this.activePartialPaths.delete(downloadTargetPath);
+
+                                    if (channelId && outputFolder) {
+                                        db.setFileDownloaded(channelId, outputFolder, refreshedMessage.id, 1);
+                                        db.setValidationState(channelId, outputFolder, refreshedMessage.id, {
+                                            status: "verified",
+                                            profile: validationResult.profile,
+                                            error: null,
+                                        });
+                                        downloadState.markDownloaded(refreshedMessage.id);
+                                        logMessage.dl(`[DL] Marked downloaded in DB (after refetch): msgId=${msgId}, channelId=${channelId}`);
+                                    }
+
+                                    return { success: true, fileSize, validationProfile: validationResult.profile };
+                                } else {
+                                    logMessage.warn(`[DL] Download for msgId=${msgId} failed validation after refetch, giving up`);
+                                }
+                            } catch (retryErr) {
+                                const retryIsFileRefExpired = retryErr?._isFileReferenceExpired || isFileRefExpired(retryErr);
+                                if (retryIsFileRefExpired && refetchAttempt < FILE_REF_EXPIRED_MAX_RETRIES) {
+                                    logMessage.warn(`[DL] FILE_REFERENCE_EXPIRED again for msgId=${msgId} after refetch attempt ${refetchAttempt}`);
+                                    continue;
+                                }
+                                logMessage.error(`[DL] Download failed (after refetch) for msgId=${msgId}: ${retryErr?.message || String(retryErr)}`);
+                                break;
+                            }
+                        } else {
+                            logMessage.warn(`[DL] Re-fetched message msgId=${msgId} but no media found (attempt ${refetchAttempt})`);
+                        }
+                    } catch (refetchErr) {
+                        logMessage.error(`[DL] Failed to re-fetch message msgId=${msgId} (attempt ${refetchAttempt}): ${refetchErr?.message || String(refetchErr)}`);
+                    }
+                }
+            }
+
             logMessage.error(`[DL] Error in downloadMedia: msgId=${msgId}, error=${err?.message || String(err)}`);
-            if (fs.existsSync(partialPath)) {
+            const cleanupPath = downloadTargetPath || partialPath;
+            if (cleanupPath) {
+                this.activePartialPaths.delete(cleanupPath);
+            }
+            if (cleanupPath && fs.existsSync(cleanupPath)) {
                 try {
-                    fs.unlinkSync(partialPath);
+                    fs.unlinkSync(cleanupPath);
                 } catch (cleanupError) {
-                    logMessage.error(`[DL] Failed to remove partial file ${partialPath}: ${cleanupError.message}`);
+                    logMessage.error(`[DL] Failed to remove partial file ${cleanupPath}: ${cleanupError.message}`);
                 }
             }
             return { success: false, fileSize: 0 };
@@ -310,7 +399,6 @@ class DownloadManager {
         let lastCheckProgressLogAt = 0;
         let checkedFiles = 0;
 
-        // Инициализация очереди загрузок
         const downloadQueue = [];
         let queuedDownloads = 0;
         let successfulDownloads = 0;
@@ -321,7 +409,8 @@ class DownloadManager {
         let totalBytesDownloaded = 0;
         
         const progressLogger = new ProgressLogger({
-            maxParallel: floodState.getParallelLimit()
+            maxParallel: floodState.getParallelLimit(),
+            channelId,
         });
 
         // Debug: Track timing for validation vs other operations
@@ -373,16 +462,14 @@ class DownloadManager {
                         logMessage.dl(`[DL] Need download: msgId=${message.id}, type=${mediaType}, file=${path.basename(mediaPath)}`);
                     }
 
-                    // Логирование прогресса проверки
-                    const shouldLogCheck = checkedFiles % 100 === 0 ||
-                                          Date.now() - lastCheckProgressLogAt >= 5000;
-                    if (shouldLogCheck) {
+                    if (ProgressLogger.shouldLogCheckProgress(checkedFiles, messages.filter(m => m.media).length, lastCheckProgressLogAt)) {
                         ProgressLogger.logCheckProgress(
                             checkedFiles,
                             messages.filter(m => m.media).length,
                             batchSkippedExisting,
                             batchNewFiles,
-                            checkStartedAt
+                            checkStartedAt,
+                            channelId
                         );
                         lastCheckProgressLogAt = Date.now();
                     }
@@ -471,14 +558,15 @@ class DownloadManager {
             );
         }
         
-        // Финальный лог прогресса проверки
         if (checkedFiles > 0) {
+            const mediaCount = messages.filter(m => m.media).length;
             ProgressLogger.logCheckProgress(
-                checkedFiles,
-                messages.filter(m => m.media).length,
+                mediaCount,
+                mediaCount,
                 batchSkippedExisting,
                 batchNewFiles,
-                checkStartedAt
+                checkStartedAt,
+                channelId
             );
         }
 
@@ -530,7 +618,8 @@ class DownloadManager {
                         progressLogger.updateStats({
                             successful: successfulDownloads,
                             failed: failedDownloads,
-                            active: this.activeDownloads.size
+                            active: this.activeDownloads.size,
+                            bytesDownloaded: totalBytesDownloaded,
                         });
                         
                         if (progressLogger.shouldLogProgress()) {
@@ -594,12 +683,37 @@ class DownloadManager {
         }
     }
 
-    /**
-     * Очистить ресурсы
-     */
+    cancel() {
+        this._cancelled = true;
+        const pending = this.activePartialPaths.size;
+        if (pending > 0) {
+            logMessage.warn(`[DL] Cancelling: cleaning ${pending} partial file(s)`);
+        }
+        for (const partialPath of this.activePartialPaths) {
+            try {
+                if (fs.existsSync(partialPath)) {
+                    fs.unlinkSync(partialPath);
+                    logMessage.dl(`[DL] Removed partial on cancel: ${path.basename(partialPath)}`);
+                }
+            } catch (e) {
+                logMessage.error(`[DL] Failed to remove partial on cancel: ${partialPath}: ${e.message}`);
+            }
+        }
+        this.activePartialPaths.clear();
+    }
+
     cleanup() {
         logMessage.dl(`[DL] Cleanup: clearing file check cache`);
+        for (const partialPath of this.activePartialPaths) {
+            try {
+                if (fs.existsSync(partialPath)) {
+                    fs.unlinkSync(partialPath);
+                }
+            } catch (e) { /* best effort on cleanup */ }
+        }
+        this.activePartialPaths.clear();
         clearFileCheckCache();
+        activeManagers.delete(this);
     }
 }
 
@@ -714,9 +828,23 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
     }
 };
 
+function cancelAllDownloads() {
+    let totalCleaned = 0;
+    for (const manager of activeManagers) {
+        const size = manager.activePartialPaths.size;
+        manager.cancel();
+        totalCleaned += size;
+    }
+    if (totalCleaned > 0) {
+        const loggerSync = require("../utils/logger");
+        loggerSync.writeSync("info", `[DL] Cleaned ${totalCleaned} partial file(s) across all managers`);
+    }
+}
+
 module.exports = {
     DownloadManager,
     downloadMessagesByIds,
     isRetryableValidationError,
     shouldRetryDownload,
+    cancelAllDownloads,
 };

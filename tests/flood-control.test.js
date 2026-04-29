@@ -143,3 +143,46 @@ test('FloodControl reacts to config changes and can release its config listener'
         }
     }
 });
+
+test('isFileReferenceExpired detects FILE_REFERENCE_EXPIRED errors', () => {
+    const { isFileReferenceExpired } = require('../services/FloodControl');
+
+    const err1 = new Error('400: FILE_REFERENCE_EXPIRED (caused by upload.GetFile)');
+    assert.equal(isFileReferenceExpired(err1), true);
+
+    const err2 = new Error('FILE_REFERENCE_X_EXPIRED');
+    assert.equal(isFileReferenceExpired(err2), true);
+
+    const err3 = new Error('FLOOD_WAIT_60');
+    assert.equal(isFileReferenceExpired(err3), false);
+
+    const err4 = new Error('network timeout');
+    assert.equal(isFileReferenceExpired(err4), false);
+
+    const err5 = { errorMessage: 'FILE_REFERENCE_EXPIRED', message: '' };
+    assert.equal(isFileReferenceExpired(err5), true);
+});
+
+test('FloodControl.runWithFloodControl tags FILE_REFERENCE_EXPIRED errors with _isFileReferenceExpired', async () => {
+    config.set('download.maxParallel', 4, false);
+    config.set('download.baseRpcDelaySeconds', 0, false);
+
+    const control = new FloodControl({
+        waitFn: async () => {},
+        nowFn: () => 1_000,
+    });
+
+    try {
+        const err = await withMutedFloodLogs(async () =>
+            control.runWithFloodControl('file-ref-test', async () => {
+                const e = new Error('400: FILE_REFERENCE_EXPIRED (caused by upload.GetFile)');
+                throw e;
+            }).catch(e => e)
+        );
+
+        assert.equal(err._isFileReferenceExpired, true);
+        assert.ok(err.message.includes('FILE_REFERENCE_EXPIRED'));
+    } finally {
+        control.cleanup();
+    }
+});

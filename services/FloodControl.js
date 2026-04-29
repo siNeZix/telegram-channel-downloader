@@ -4,6 +4,11 @@ const config = require('../utils/config');
 
 const MAX_RPC_RETRIES = 5;
 
+function isFileReferenceExpired(err) {
+    const text = (err?.errorMessage || err?.message || String(err) || "").toUpperCase();
+    return text.includes("FILE_REFERENCE") && text.includes("EXPIRED");
+}
+
 /**
  * Сервис для управления Flood Wait ограничениями Telegram API
  */
@@ -147,7 +152,10 @@ class FloodControl {
                     // Не ждём здесь - maybeWaitCooldown в следующей итерации сам подождёт
                     continue;
                 }
-                logMessage.error(`[FLOOD] Non-flood error in ${label}: ${err?.message || err}`);
+                if (isFileReferenceExpired(err)) {
+                    logMessage.warn(`[FLOOD] FILE_REFERENCE_EXPIRED in ${label}: ${err?.message || err}`);
+                    err._isFileReferenceExpired = true;
+                }
                 throw err;
             }
         }
@@ -216,4 +224,5 @@ const createFloodState = () => {
 module.exports = {
     FloodControl,
     createFloodState,
+    isFileReferenceExpired,
 };

@@ -69,8 +69,9 @@ function formatDuration(seconds) {
  * @param {number} width
  */
 function printProgress(current, total, width = 30) {
-    const percent = Math.round((current / total) * 100);
-    const filled = Math.round((current / total) * width);
+    const safeTotal = Math.max(total, 1);
+    const percent = Math.min(Math.round((current / safeTotal) * 100), 100);
+    const filled = Math.min(Math.round((current / safeTotal) * width), width);
     const empty = width - filled;
     const bar = "█".repeat(filled) + "░".repeat(empty);
     process.stdout.write(`\r[${bar}] ${percent}% (${current}/${total})`);
@@ -349,34 +350,52 @@ async function runValidation(options = {}) {
                                 });
                                 log.deleted(`${file.relativePath} (not in DB, invalid)`);
                             } else if (quarantined) {
-								validationErrors++;
+								totalErrors++;
 								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
                             }
                         }
                     }
                 } else {
-                    // Not in deep mode or file doesn't exist - delete if exists
+                    // Not in deep mode - run fast ffprobe check before quarantining
                     if (fs.existsSync(file.path)) {
-                        logMessage.warn(`[CACHE] File not in DB, quarantining: ${file.relativePath}`);
-                        if (dryRun) {
-                            log.dryrun(`Would quarantine (not in DB): ${file.relativePath}`);
-                        } else {
-							const quarantined = await quarantineFile(channelId, outputFolder, file.path, "not marked as downloaded in DB", {
-                                relativePath: file.relativePath,
-                                size: file.size,
+                        logMessage.info(`[CACHE] File not in DB, running ffprobe check: ${file.relativePath}`);
+
+                        const ffprobeCheck = await validationService.validateMediaFile(file.path, file.type, {
+                            deepValidation: false,
+                            expectedSize: db.getExpectedSize(channelId, outputFolder, messageId),
+                        });
+
+                        if (ffprobeCheck.valid) {
+                            logMessage.success(`[CACHE] File is valid (ffprobe), recovering: ${file.relativePath}`);
+                            db.setFileDownloaded(channelId, outputFolder, messageId, 1);
+                            db.setValidationState(channelId, outputFolder, messageId, {
+                                status: "verified",
+                                profile: ffprobeCheck.profile,
+                                error: null,
                             });
-                            if (quarantined?.ok) {
-                                totalDeleted++;
-                                deletedEntries.push({
-                                    path: file.relativePath,
+                            totalDbRecovered++;
+                        } else {
+                            logMessage.warn(`[CACHE] File not in DB and ffprobe failed, quarantining: ${file.relativePath}`);
+                            if (dryRun) {
+                                log.dryrun(`Would quarantine (not in DB, invalid): ${file.relativePath}`);
+                            } else {
+                                const quarantined = await quarantineFile(channelId, outputFolder, file.path, `not in DB + ${ffprobeCheck.error}`, {
+                                    relativePath: file.relativePath,
                                     size: file.size,
-                                    reason: "not marked as downloaded in DB",
-                                    timestamp: new Date().toISOString()
                                 });
-                                log.deleted(`${file.relativePath} (not in DB)`);
-                            } else if (quarantined) {
-								validationErrors++;
-								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
+                                if (quarantined?.ok) {
+                                    totalDeleted++;
+                                    deletedEntries.push({
+                                        path: file.relativePath,
+                                        size: file.size,
+                                        reason: `not in DB + ${ffprobeCheck.error}`,
+                                        timestamp: new Date().toISOString()
+                                    });
+                                    log.deleted(`${file.relativePath} (not in DB, invalid)`);
+                                } else if (quarantined) {
+                                    totalErrors++;
+                                    log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
+                                }
                             }
                         }
                     } else {
@@ -468,13 +487,12 @@ async function runValidation(options = {}) {
         }
 
         if (verbose || now - lastProgressUpdate >= PROGRESS_UPDATE_INTERVAL) {
-            printProgress(totalValid + totalInvalid + validationErrors, files.length);
+            printProgress(validationCount, files.length);
             lastProgressUpdate = now;
         }
 
         if (!result.valid) {
             totalInvalid++;
-            validationErrors++;
             errorEntries.push({
                 path: file.relativePath,
                 size: file.size,
