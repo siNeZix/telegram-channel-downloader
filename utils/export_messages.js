@@ -5,9 +5,7 @@ const paths = require("./paths");
 const logger = require("./logger");
 const { logMessage } = require("./helper");
 
-const getExportDir = () => process.argv[2]
-	? path.resolve(process.argv[2])
-	: paths.export;
+const getExportDir = () => (process.argv[2] ? path.resolve(process.argv[2]) : paths.export);
 
 if (require.main === module) {
 	const { parseRuntimeOptions } = require("./cli_utils");
@@ -28,9 +26,7 @@ const getChannelList = () => {
 	}
 
 	const entries = fs.readdirSync(exportDir, { withFileTypes: true });
-	return entries
-		.filter(entry => entry.isDirectory())
-		.map(entry => entry.name);
+	return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 };
 
 /**
@@ -64,7 +60,7 @@ const exportChannel = (channelId) => {
 /**
  * Основная функция экспорта
  */
-	const main = async () => {
+const main = async () => {
 	const exportDir = getExportDir();
 	logMessage.info("Starting messages export to JSON files...");
 	logMessage.info(`Using export directory: ${exportDir}`);

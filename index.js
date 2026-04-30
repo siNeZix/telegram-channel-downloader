@@ -9,13 +9,13 @@ const args = process.argv.slice(2);
 parseRuntimeOptions(args);
 
 const appPaths = {
-  exportPath: paths.export,
+	exportPath: paths.export,
 };
 
 // Parse --check and --deep-check flags (used during normal download to validate existing files)
 const checkIndex = args.indexOf("--check");
 const deepCheckIndex = args.indexOf("--deep-check");
-const checkMode = deepCheckIndex !== -1 ? "deep" : (checkIndex !== -1 ? "fast" : "none");
+const checkMode = deepCheckIndex !== -1 ? "deep" : checkIndex !== -1 ? "fast" : "none";
 
 // Remove check flags from args
 if (checkIndex !== -1) args.splice(checkIndex, 1);
@@ -26,33 +26,38 @@ const autoMode = args.includes("--auto") || args.includes("-y");
 if (autoMode) args.splice(args.indexOf(args.includes("--auto") ? "--auto" : "-y"), 1);
 
 if (args[0] === "valid") {
-    // Run validator module
-    const { runValidation, parseArgs } = require("./validators");
-    const logger = require("./utils/logger");
-    const options = parseArgs();
-    logger.init();
-    // If --deep-check was passed with valid command, enable deep validation
-    if (checkMode === "deep") {
-        options.deep = true;
-    }
-    runValidation(options)
-        .then((result) => {
-            logger.close();
-            process.exit(0);
-        })
-        .catch((err) => {
-            logger.writeSync("error", `[VALID] Validation failed: ${err?.stack || err?.message || String(err)}`);
-            console.error(`Validation failed: ${err.message}`);
-            logger.close();
-            process.exit(1);
-        });
-    return;
+	// Run validator module
+	const { runValidation, parseArgs } = require("./validators");
+	const logger = require("./utils/logger");
+	const options = parseArgs();
+	logger.init();
+	// If --deep-check was passed with valid command, enable deep validation
+	if (checkMode === "deep") {
+		options.deep = true;
+	}
+	runValidation(options)
+		.then((result) => {
+			logger.close();
+			process.exit(0);
+		})
+		.catch((err) => {
+			logger.writeSync("error", `[VALID] Validation failed: ${err?.stack || err?.message || String(err)}`);
+			console.error(`Validation failed: ${err.message}`);
+			logger.close();
+			process.exit(1);
+		});
+	return;
 }
 
-const { getMessages, startChannelListener, downloadMessagesByIds, rebuildDatabaseFromApi } = require("./modules/messages");
+const {
+	getMessages,
+	startChannelListener,
+	downloadMessagesByIds,
+	rebuildDatabaseFromApi,
+} = require("./modules/messages");
 const { getLastSelection } = require("./utils/file_helper");
 const { initAuth } = require("./modules/auth");
-const { searchDialog, selectDialog, getDialogName, getAllDialogs} = require("./modules/dialoges");
+const { searchDialog, selectDialog, getDialogName, getAllDialogs } = require("./modules/dialoges");
 const { logMessage, MEDIA_TYPES } = require("./utils/helper");
 const logger = require("./utils/logger");
 const db = require("./utils/db");
@@ -64,364 +69,374 @@ let client = null;
 let shutdownInProgress = false;
 
 const shutdown = async (exitCode, reason = null) => {
-  if (shutdownInProgress) {
-    return;
-  }
+	if (shutdownInProgress) {
+		return;
+	}
 
-  shutdownInProgress = true;
+	shutdownInProgress = true;
 
-  if (reason) {
-    logger.writeSync("info", reason);
-  }
+	if (reason) {
+		logger.writeSync("info", reason);
+	}
 
-  cancelAllDownloads();
+	cancelAllDownloads();
 
-  if (client && typeof client.disconnect === "function") {
-    try {
-      await client.disconnect();
-    } catch (error) {
-      logger.writeSync("error", `[MAIN] Failed to disconnect Telegram client: ${error?.message || String(error)}`);
-    }
-  }
+	if (client && typeof client.disconnect === "function") {
+		try {
+			await client.disconnect();
+		} catch (error) {
+			logger.writeSync(
+				"error",
+				`[MAIN] Failed to disconnect Telegram client: ${error?.message || String(error)}`,
+			);
+		}
+	}
 
-  try {
-    db.closeAllConnections();
-  } catch (error) {
-    logger.writeSync("error", `[MAIN] Failed to close database connections: ${error?.message || String(error)}`);
-  }
+	try {
+		db.closeAllConnections();
+	} catch (error) {
+		logger.writeSync("error", `[MAIN] Failed to close database connections: ${error?.message || String(error)}`);
+	}
 
-  logger.close();
-  process.exit(exitCode);
+	logger.close();
+	process.exit(exitCode);
 };
 
-process.on('SIGINT', () => {
-    shutdown(130, 'Process interrupted (SIGINT), shutting down...').catch((error) => {
-      logger.writeSync('error', `[MAIN] Shutdown failed after SIGINT: ${error?.message || String(error)}`);
-      logger.close();
-      process.exit(130);
-    });
+process.on("SIGINT", () => {
+	shutdown(130, "Process interrupted (SIGINT), shutting down...").catch((error) => {
+		logger.writeSync("error", `[MAIN] Shutdown failed after SIGINT: ${error?.message || String(error)}`);
+		logger.close();
+		process.exit(130);
+	});
 });
 
-process.on('SIGTERM', () => {
-    shutdown(143, 'Process terminated (SIGTERM), shutting down...').catch((error) => {
-      logger.writeSync('error', `[MAIN] Shutdown failed after SIGTERM: ${error?.message || String(error)}`);
-      logger.close();
-      process.exit(143);
-    });
+process.on("SIGTERM", () => {
+	shutdown(143, "Process terminated (SIGTERM), shutting down...").catch((error) => {
+		logger.writeSync("error", `[MAIN] Shutdown failed after SIGTERM: ${error?.message || String(error)}`);
+		logger.close();
+		process.exit(143);
+	});
 });
 
-process.on('uncaughtException', (err) => {
-  const msg = `[FATAL] Uncaught exception: ${err?.message || String(err)}\n${err?.stack || ''}`;
-  logger.writeSync('error', msg);
-  shutdown(1).catch(() => {
-    logger.close();
-    process.exit(1);
-  });
+process.on("uncaughtException", (err) => {
+	const msg = `[FATAL] Uncaught exception: ${err?.message || String(err)}\n${err?.stack || ""}`;
+	logger.writeSync("error", msg);
+	shutdown(1).catch(() => {
+		logger.close();
+		process.exit(1);
+	});
 });
 
-process.on('unhandledRejection', (reason) => {
-  const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ''}`;
-  logger.writeSync('error', msg);
-  shutdown(1).catch(() => {
-    logger.close();
-    process.exit(1);
-  });
+process.on("unhandledRejection", (reason) => {
+	const msg = `[FATAL] Unhandled rejection: ${reason?.message || String(reason)}\n${reason?.stack || ""}`;
+	logger.writeSync("error", msg);
+	shutdown(1).catch(() => {
+		logger.close();
+		process.exit(1);
+	});
 });
 
-const {
-  booleanInput,
-  downloadOptionInput,
-  textInput,
-  selectInput,
-} = require("./utils/input_helper");
+const { booleanInput, downloadOptionInput, textInput, selectInput } = require("./utils/input_helper");
 
 const downloadableFiles = {
-  webpage: true,
-  poll: true,
-  geo: true,
-  contact: true,
-  venue: true,
-  sticker: true,
-  image: true,
-  video: true,
-  audio: true,
-  pdf: true,
+	webpage: true,
+	poll: true,
+	geo: true,
+	contact: true,
+	venue: true,
+	sticker: true,
+	image: true,
+	video: true,
+	audio: true,
+	pdf: true,
 };
 
 const directRebuildChannelId = (() => {
-  if (args[0] !== "rebuild-db") {
-    return null;
-  }
+	if (args[0] !== "rebuild-db") {
+		return null;
+	}
 
-  const channelIdFromArgs = Number(args[1]);
-  return Number.isFinite(channelIdFromArgs) && channelIdFromArgs !== 0
-    ? channelIdFromArgs
-    : null;
+	const channelIdFromArgs = Number(args[1]);
+	return Number.isFinite(channelIdFromArgs) && channelIdFromArgs !== 0 ? channelIdFromArgs : null;
 })();
 
 // --- Main Menu ---
 const showMainMenu = async () => {
-  const choices = [
-    { name: "Full Download (All messages with media)", value: "download" },
-    { name: "Rebuild DB From API (No media download)", value: "rebuild_db" },
-    { name: "Real-time Monitor (Listen for new messages)", value: "listen" },
-    { name: "Download by IDs (Specific message IDs)", value: "download_ids" },
-    { name: "Run File Validators", value: "valid" },
-    { name: "Exit", value: "exit" },
-  ];
+	const choices = [
+		{ name: "Full Download (All messages with media)", value: "download" },
+		{ name: "Rebuild DB From API (No media download)", value: "rebuild_db" },
+		{ name: "Real-time Monitor (Listen for new messages)", value: "listen" },
+		{ name: "Download by IDs (Specific message IDs)", value: "download_ids" },
+		{ name: "Run File Validators", value: "valid" },
+		{ name: "Exit", value: "exit" },
+	];
 
-  return await selectInput("Select an action:", choices);
+	return await selectInput("Select an action:", choices);
 };
 
 // --- Search or List Channel ---
 const searchOrListChannel = async (dialogs) => {
-  const wantToSearch = await booleanInput("Do you want to search for a channel?", false);
-  if (wantToSearch) {
-    await searchDialog(dialogs);
-  } else {
-    await selectDialog(dialogs);
-  }
+	const wantToSearch = await booleanInput("Do you want to search for a channel?", false);
+	if (wantToSearch) {
+		await searchDialog(dialogs);
+	} else {
+		await selectDialog(dialogs);
+	}
 };
 
 // --- Download Full Channel ---
 const runFullDownload = async (client, chId) => {
-  let selectedChannelId = chId;
+	let selectedChannelId = chId;
 
-  if (!selectedChannelId) {
-    // Проверяем, есть ли сохраненный выбор канала
-    const lastSelection = getLastSelection();
-    if (lastSelection.channelId) {
-      const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
-      logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
-      const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
-      
-      if (!useLastChannel) {
-        // Пользователь хочет выбрать другой канал
-        const dialogs = await getAllDialogs(client, true, appPaths);
-        await searchOrListChannel(dialogs);
-        const newSelection = getLastSelection();
-        selectedChannelId = newSelection.channelId;
-      } else {
-        selectedChannelId = lastSelection.channelId;
-        logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
-      }
-    } else {
-      // Нет сохраненного выбора, предлагаем выбрать канал
-      const dialogs = await getAllDialogs(client, true, appPaths);
-      await searchOrListChannel(dialogs);
-      const newSelection = getLastSelection();
-      selectedChannelId = newSelection.channelId;
-    }
-  } else {
-    logMessage.success(`Selected channel is: ${await getDialogName(client, selectedChannelId, appPaths)}`);
-    const changeChannel = await booleanInput("Do you want to change channel?", false);
-    if (changeChannel) {
-      const dialogs = await getAllDialogs(client, true, appPaths);
-      await searchOrListChannel(dialogs);
-      const newSelection = getLastSelection();
-      selectedChannelId = newSelection.channelId;
-    }
-  }
+	if (!selectedChannelId) {
+		// Проверяем, есть ли сохраненный выбор канала
+		const lastSelection = getLastSelection();
+		if (lastSelection.channelId) {
+			const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
+			logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
+			const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
 
-  const filesToDownload = await downloadOptionInput();
-  
-  // Валидация клиента перед передачей
-  if (!client) {
-    logMessage.error('Client is null/undefined - authentication failed');
-    return;
-  }
-  if (typeof client.getMessages !== 'function') {
-    logMessage.error(`Client is not properly initialized - getMessages is ${typeof client.getMessages}`);
-    return;
-  }
-  
-  await getMessages(client, selectedChannelId, filesToDownload, { ...appPaths, check: checkMode !== "none", deep: checkMode === "deep" });
+			if (!useLastChannel) {
+				// Пользователь хочет выбрать другой канал
+				const dialogs = await getAllDialogs(client, true, appPaths);
+				await searchOrListChannel(dialogs);
+				const newSelection = getLastSelection();
+				selectedChannelId = newSelection.channelId;
+			} else {
+				selectedChannelId = lastSelection.channelId;
+				logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
+			}
+		} else {
+			// Нет сохраненного выбора, предлагаем выбрать канал
+			const dialogs = await getAllDialogs(client, true, appPaths);
+			await searchOrListChannel(dialogs);
+			const newSelection = getLastSelection();
+			selectedChannelId = newSelection.channelId;
+		}
+	} else {
+		logMessage.success(`Selected channel is: ${await getDialogName(client, selectedChannelId, appPaths)}`);
+		const changeChannel = await booleanInput("Do you want to change channel?", false);
+		if (changeChannel) {
+			const dialogs = await getAllDialogs(client, true, appPaths);
+			await searchOrListChannel(dialogs);
+			const newSelection = getLastSelection();
+			selectedChannelId = newSelection.channelId;
+		}
+	}
+
+	const filesToDownload = await downloadOptionInput();
+
+	// Валидация клиента перед передачей
+	if (!client) {
+		logMessage.error("Client is null/undefined - authentication failed");
+		return;
+	}
+	if (typeof client.getMessages !== "function") {
+		logMessage.error(`Client is not properly initialized - getMessages is ${typeof client.getMessages}`);
+		return;
+	}
+
+	await getMessages(client, selectedChannelId, filesToDownload, {
+		...appPaths,
+		check: checkMode !== "none",
+		deep: checkMode === "deep",
+	});
 };
 
 const resolveSelectedChannelId = async (client, chId) => {
-  let selectedChannelId = chId;
+	let selectedChannelId = chId;
 
-  if (!selectedChannelId) {
-    const lastSelection = getLastSelection();
-    if (lastSelection.channelId) {
-      const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
-      logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
-      const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
+	if (!selectedChannelId) {
+		const lastSelection = getLastSelection();
+		if (lastSelection.channelId) {
+			const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
+			logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
+			const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
 
-      if (!useLastChannel) {
-        const dialogs = await getAllDialogs(client, true, appPaths);
-        await searchOrListChannel(dialogs);
-        const newSelection = getLastSelection();
-        selectedChannelId = newSelection.channelId;
-      } else {
-        selectedChannelId = lastSelection.channelId;
-        logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
-      }
-    } else {
-      const dialogs = await getAllDialogs(client, true, appPaths);
-      await searchOrListChannel(dialogs);
-      const newSelection = getLastSelection();
-      selectedChannelId = newSelection.channelId;
-    }
-  }
+			if (!useLastChannel) {
+				const dialogs = await getAllDialogs(client, true, appPaths);
+				await searchOrListChannel(dialogs);
+				const newSelection = getLastSelection();
+				selectedChannelId = newSelection.channelId;
+			} else {
+				selectedChannelId = lastSelection.channelId;
+				logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
+			}
+		} else {
+			const dialogs = await getAllDialogs(client, true, appPaths);
+			await searchOrListChannel(dialogs);
+			const newSelection = getLastSelection();
+			selectedChannelId = newSelection.channelId;
+		}
+	}
 
-  return selectedChannelId;
+	return selectedChannelId;
 };
 
 const runDatabaseRebuild = async (client, chId) => {
-  const selectedChannelId = await resolveSelectedChannelId(client, chId);
-  if (!selectedChannelId) {
-    logMessage.error("Channel was not selected");
-    return;
-  }
+	const selectedChannelId = await resolveSelectedChannelId(client, chId);
+	if (!selectedChannelId) {
+		logMessage.error("Channel was not selected");
+		return;
+	}
 
-  if (!client || typeof client.getMessages !== "function") {
-    logMessage.error("Client is not properly initialized for DB rebuild");
-    return;
-  }
+	if (!client || typeof client.getMessages !== "function") {
+		logMessage.error("Client is not properly initialized for DB rebuild");
+		return;
+	}
 
-  // Warm up Telegram entity cache so direct numeric IDs can be resolved.
-  await getAllDialogs(client, true, appPaths);
+	// Warm up Telegram entity cache so direct numeric IDs can be resolved.
+	await getAllDialogs(client, true, appPaths);
 
-  await rebuildDatabaseFromApi(client, selectedChannelId, appPaths);
+	await rebuildDatabaseFromApi(client, selectedChannelId, appPaths);
 };
 
 // --- Download by IDs ---
 const runDownloadByIds = async (client) => {
-  const chIdInput = await textInput("Please Enter Channel ID: ");
-  const channelIdNum = Number(chIdInput);
-  if (!channelIdNum) {
-    logMessage.error("Invalid Channel ID");
-    return;
-  }
+	const chIdInput = await textInput("Please Enter Channel ID: ");
+	const channelIdNum = Number(chIdInput);
+	if (!channelIdNum) {
+		logMessage.error("Invalid Channel ID");
+		return;
+	}
 
-  const messageIdsText = await textInput("Please Enter Message Id(s) (separated by comma): ");
-  const messageIds = messageIdsText.split(",").map(Number).filter(id => !isNaN(id));
+	const messageIdsText = await textInput("Please Enter Message Id(s) (separated by comma): ");
+	const messageIds = messageIdsText
+		.split(",")
+		.map(Number)
+		.filter((id) => !isNaN(id));
 
-  if (messageIds.length === 0) {
-    logMessage.error("No valid message IDs provided");
-    return;
-  }
+	if (messageIds.length === 0) {
+		logMessage.error("No valid message IDs provided");
+		return;
+	}
 
-  await downloadMessagesByIds(client, channelIdNum, messageIds, appPaths);
+	await downloadMessagesByIds(client, channelIdNum, messageIds, appPaths);
 };
 
 // --- Auto mode: skip all prompts, use last channel or provided channelId ---
 const runAutoMode = async (client, channelIdOverride) => {
-  let selectedChannelId = channelIdOverride;
+	let selectedChannelId = channelIdOverride;
 
-  if (!selectedChannelId) {
-    const lastSelection = getLastSelection();
-    if (lastSelection.channelId) {
-      selectedChannelId = lastSelection.channelId;
-      logMessage.success(`[AUTO] Using last channel: ${selectedChannelId}`);
-    } else {
-      logMessage.error("[AUTO] No channel ID provided and no last selection found. Use: npm start -- --auto <channelId>");
-      return;
-    }
-  } else {
-    logMessage.success(`[AUTO] Using channel: ${selectedChannelId}`);
-  }
+	if (!selectedChannelId) {
+		const lastSelection = getLastSelection();
+		if (lastSelection.channelId) {
+			selectedChannelId = lastSelection.channelId;
+			logMessage.success(`[AUTO] Using last channel: ${selectedChannelId}`);
+		} else {
+			logMessage.error(
+				"[AUTO] No channel ID provided and no last selection found. Use: npm start -- --auto <channelId>",
+			);
+			return;
+		}
+	} else {
+		logMessage.success(`[AUTO] Using channel: ${selectedChannelId}`);
+	}
 
-  const filesToDownload = {
-    webpage: true,
-    poll: true,
-    geo: true,
-    contact: true,
-    venue: true,
-    sticker: true,
-    image: true,
-    video: true,
-    audio: true,
-    pdf: true,
-  };
+	const filesToDownload = {
+		webpage: true,
+		poll: true,
+		geo: true,
+		contact: true,
+		venue: true,
+		sticker: true,
+		image: true,
+		video: true,
+		audio: true,
+		pdf: true,
+	};
 
-  await getMessages(client, selectedChannelId, filesToDownload, { ...appPaths, check: checkMode !== "none", deep: checkMode === "deep" });
+	await getMessages(client, selectedChannelId, filesToDownload, {
+		...appPaths,
+		check: checkMode !== "none",
+		deep: checkMode === "deep",
+	});
 };
 
 // --- Parse --auto channel ID ---
 const autoChannelId = (() => {
-  const autoIdx = process.argv.indexOf("--auto");
-  const yIdx = process.argv.indexOf("-y");
-  const hasAuto = autoIdx !== -1;
-  const hasY = yIdx !== -1;
+	const autoIdx = process.argv.indexOf("--auto");
+	const yIdx = process.argv.indexOf("-y");
+	const hasAuto = autoIdx !== -1;
+	const hasY = yIdx !== -1;
 
-  if (!hasAuto && !hasY) return null;
+	if (!hasAuto && !hasY) return null;
 
-  const flagIdx = hasAuto ? autoIdx : yIdx;
-  const nextVal = process.argv[flagIdx + 1];
-  const parsed = nextVal ? Number(nextVal) : NaN;
-  if (Number.isFinite(parsed) && parsed !== 0) {
-    return parsed;
-  }
-  return undefined;
+	const flagIdx = hasAuto ? autoIdx : yIdx;
+	const nextVal = process.argv[flagIdx + 1];
+	const parsed = nextVal ? Number(nextVal) : NaN;
+	if (Number.isFinite(parsed) && parsed !== 0) {
+		return parsed;
+	}
+	return undefined;
 })();
 
 // Main Entry Point
 (async () => {
-  try {
-    client = await initAuth();
+	try {
+		client = await initAuth();
 
-    if (args[0] === "rebuild-db") {
-      await runDatabaseRebuild(client, directRebuildChannelId);
-      await shutdown(0);
-      return;
-    }
+		if (args[0] === "rebuild-db") {
+			await runDatabaseRebuild(client, directRebuildChannelId);
+			await shutdown(0);
+			return;
+		}
 
-    if (autoMode || autoChannelId !== null) {
-      await runAutoMode(client, autoChannelId);
-      await shutdown(0);
-      return;
-    }
+		if (autoMode || autoChannelId !== null) {
+			await runAutoMode(client, autoChannelId);
+			await shutdown(0);
+			return;
+		}
 
-    // Show main menu and get choice
-    const choice = await showMainMenu();
+		// Show main menu and get choice
+		const choice = await showMainMenu();
 
-    switch (choice) {
-      case "download":
-        await runFullDownload(client, null);
-        break;
+		switch (choice) {
+			case "download":
+				await runFullDownload(client, null);
+				break;
 
-      case "rebuild_db":
-        await runDatabaseRebuild(client, null);
-        break;
+			case "rebuild_db":
+				await runDatabaseRebuild(client, null);
+				break;
 
-      case "listen":
-        await startChannelListener(client, null, appPaths);
-        logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
-        await new Promise((resolve) => {
-          const sigint = () => resolve();
-          process.once("SIGINT", sigint);
-          process.once("SIGTERM", sigint);
-        });
-        break;
+			case "listen":
+				await startChannelListener(client, null, appPaths);
+				logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
+				await new Promise((resolve) => {
+					const sigint = () => resolve();
+					process.once("SIGINT", sigint);
+					process.once("SIGTERM", sigint);
+				});
+				break;
 
-      case "download_ids":
-        await runDownloadByIds(client);
-        break;
+			case "download_ids":
+				await runDownloadByIds(client);
+				break;
 
-      case "valid":
-        const { runValidation, parseArgs } = require("./validators");
-        const options = parseArgs();
-        if (checkMode === "deep") {
-          options.deep = true;
-        }
-        await runValidation(options);
-        break;
+			case "valid": {
+				const { runValidation, parseArgs } = require("./validators");
+				const options = parseArgs();
+				if (checkMode === "deep") {
+					options.deep = true;
+				}
+				await runValidation(options);
+				break;
+			}
 
-      case "exit":
-        logMessage.info("Exiting...");
-        break;
+			case "exit":
+				logMessage.info("Exiting...");
+				break;
 
-      default:
-        logMessage.error("Unknown option selected");
-    }
+			default:
+				logMessage.error("Unknown option selected");
+		}
 
-    await shutdown(0);
-  } catch (err) {
-    const errorText = err?.stack || err?.message || String(err);
-    logger.writeSync("error", `[MAIN] Unhandled error: ${errorText}`);
-    console.error(err);
-    await shutdown(1);
-  }
+		await shutdown(0);
+	} catch (err) {
+		const errorText = err?.stack || err?.message || String(err);
+		logger.writeSync("error", `[MAIN] Unhandled error: ${errorText}`);
+		console.error(err);
+		await shutdown(1);
+	}
 })();

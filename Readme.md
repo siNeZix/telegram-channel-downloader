@@ -19,6 +19,7 @@ The project currently supports these workflows:
 ## Main features
 
 ### Interactive CLI menu
+
 Running the main application opens an interactive menu with these actions:
 
 - `Full Download (All messages with media)`
@@ -28,18 +29,23 @@ Running the main application opens an interactive menu with these actions:
 - `Exit`
 
 ### Authentication and session reuse
+
 On the first run, the app asks for Telegram credentials and login confirmation data. The session string is then saved into `config.json` and reused on later runs so you do not need to log in every time.
 
 ### Full archive download
+
 The downloader can fetch a full message history for a selected channel/group/user, save message metadata to SQLite, and download supported media into the `export/` folder.
 
 ### Real-time listener
+
 The listener mode subscribes to new Telegram messages and keeps the process alive, downloading new content as it appears.
 
 ### Download by message IDs
+
 You can manually provide a channel ID and one or more message IDs to download media only for specific messages.
 
 ### Validation and cleanup
+
 The validator scans the export directory, verifies supported media using FFmpeg/FFprobe, can skip files already covered by snapshots, and can optionally compare files against the SQLite download cache.
 
 ## Project structure
@@ -108,20 +114,20 @@ Example `config.json`:
 
 ```json
 {
-  "apiId": 123456,
-  "apiHash": "your_api_hash",
-  "sessionId": null,
-  "download": {
-    "maxParallel": 20,
-    "minParallel": 2,
-    "baseRpcDelaySeconds": 0.05,
-    "messageLimit": 200,
-    "fastForwardMessageLimit": 1000,
-    "checkProgressIntervalFiles": 100
-  },
-  "logging": {
-    "progressLogIntervalSeconds": 5
-  }
+	"apiId": 123456,
+	"apiHash": "your_api_hash",
+	"sessionId": null,
+	"download": {
+		"maxParallel": 20,
+		"minParallel": 2,
+		"baseRpcDelaySeconds": 0.05,
+		"messageLimit": 200,
+		"fastForwardMessageLimit": 1000,
+		"checkProgressIntervalFiles": 100
+	},
+	"logging": {
+		"progressLogIntervalSeconds": 5
+	}
 }
 ```
 
@@ -160,6 +166,7 @@ On later runs, the saved session is reused automatically.
 ## Main usage scenarios
 
 ### 1. Full download
+
 Use this to archive an entire dialog.
 
 Flow:
@@ -184,6 +191,7 @@ node index.js --deep-check
 - `--deep-check` enables deeper checking during the download flow.
 
 ### 2. Real-time monitor
+
 Use this mode to keep watching a dialog for new messages.
 
 Flow:
@@ -196,6 +204,7 @@ Flow:
 Stop the listener with `Ctrl+C`.
 
 ### 3. Download by IDs
+
 Use this mode when you already know the Telegram channel ID and the message IDs you need.
 
 Flow:
@@ -208,18 +217,23 @@ Flow:
 ## Available npm scripts
 
 ### `npm start`
+
 Runs the main interactive CLI from `index.js`.
 
 ### `npm run dev`
+
 Runs the same CLI with Nodemon.
 
 ### `npm run valid`
+
 Runs the standalone validator CLI from `validators/index.js`.
 
 ### `npm run save-files`
+
 Scans every exported channel and creates snapshot files in each channel `snapshots/` folder.
 
 ### `npm run export-messages`
+
 Reads every channel SQLite database and regenerates:
 
 - `raw_message.json`
@@ -230,6 +244,7 @@ Reads every channel SQLite database and regenerates:
 All exported data is stored under `export/`.
 
 ### Per-channel folder
+
 Each downloaded channel gets its own folder:
 
 ```text
@@ -248,6 +263,7 @@ export/
 ```
 
 ### SQLite storage
+
 The project stores message data in `messages.db` for each channel. The database keeps:
 
 - Telegram message ID
@@ -267,6 +283,7 @@ This database is later used by:
 The current export files are written in JSON Lines format.
 
 ### `raw_message.json`
+
 Contains one raw Telegram message JSON object per line.
 
 Example:
@@ -277,6 +294,7 @@ Example:
 ```
 
 ### `all_message.json`
+
 Contains one processed message JSON object per line.
 
 This format is useful because:
@@ -296,6 +314,7 @@ npm run valid
 ```
 
 ### Dry run
+
 Show what would be deleted without actually deleting files:
 
 ```bash
@@ -333,6 +352,7 @@ node validators/index.js --ignore-snapshots
 ```
 
 ### Cache mode
+
 Compare files against the SQLite `downloaded` state:
 
 ```bash
@@ -340,6 +360,7 @@ node validators/index.js --cache
 ```
 
 ### Cache mode with deep recovery
+
 Try to validate DB-missing files and restore DB state for valid ones:
 
 ```bash

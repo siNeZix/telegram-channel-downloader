@@ -28,7 +28,7 @@ class DownloadState {
 		this.initialized = true;
 		logMessage.cache(
 			`[DownloadState] Initialized: downloaded=${this.downloadedIds.size}, ` +
-			`undownloadedMedia=${this.undownloadedMediaPaths.size}, snapshots=${this.snapshotFiles.size}`
+				`undownloadedMedia=${this.undownloadedMediaPaths.size}, snapshots=${this.snapshotFiles.size}`,
 		);
 	}
 
@@ -104,48 +104,47 @@ const LOG_LEVELS = {
 };
 
 const DEBUG_FLAG = process.argv.includes("--debug");
-const CURRENT_LOG_LEVEL = DEBUG_FLAG ? "debug" : (process.env.LOG_LEVEL || "info");
+const CURRENT_LOG_LEVEL = DEBUG_FLAG ? "debug" : process.env.LOG_LEVEL || "info";
 
-const shouldLog = (level) =>
-	LOG_LEVELS[level] >= (LOG_LEVELS[CURRENT_LOG_LEVEL] || LOG_LEVELS.info);
+const shouldLog = (level) => LOG_LEVELS[level] >= (LOG_LEVELS[CURRENT_LOG_LEVEL] || LOG_LEVELS.info);
 
 const LOG_PREFIXES = {
-	auth: '[AUTH]',
-	db: '[DB]',
-	fetch: '[FETCH]',
-	dl: '[DL]',
-	flood: '[FLOOD]',
-	valid: '[VALID]',
-	init: '[INIT]',
-	dialog: '[DIALOG]',
-	filter: '[FILTER]',
-	cache: '[CACHE]',
+	auth: "[AUTH]",
+	db: "[DB]",
+	fetch: "[FETCH]",
+	dl: "[DL]",
+	flood: "[FLOOD]",
+	valid: "[VALID]",
+	init: "[INIT]",
+	dialog: "[DIALOG]",
+	filter: "[FILTER]",
+	cache: "[CACHE]",
 };
 
 const logMessage = {
 	info: (message) => {
 		const line = `ℹ️  ${consoleColors.blue}${message}${consoleColors.reset}`;
 		console.log(line);
-		logger.write("info", line);
+		logger.write("info", message);
 	},
 	error: (message) => {
 		const line = `❌ ${consoleColors.red}${message}${consoleColors.reset}`;
 		console.log(line);
-		logger.write("error", line);
+		logger.write("error", message);
 	},
 	success: (message) => {
 		const line = `✅ ${consoleColors.green}${message}${consoleColors.reset}`;
 		console.log(line);
-		logger.write("success", line);
+		logger.write("success", message);
 	},
 	warn: (message) => {
 		const line = `⚠️  ${consoleColors.yellow}${message}${consoleColors.reset}`;
 		console.log(line);
-		logger.write("warn", line);
+		logger.write("warn", message);
 	},
 	debug: (message) => {
 		const line = `🔍 ${consoleColors.cyan}${message}${consoleColors.reset}`;
-		logger.write("debug", line);
+		logger.write("debug", message);
 		if (shouldLog("debug")) {
 			console.log(line);
 		}
@@ -225,14 +224,11 @@ const buildFileName = (message) => {
 	if (message.media.document) {
 		let docAttributes = message?.media?.document?.attributes;
 		if (docAttributes) {
-			let fileNameObj = docAttributes.find(
-				(e) => e.className == "DocumentAttributeFilename"
-			);
+			let fileNameObj = docAttributes.find((e) => e.className == "DocumentAttributeFilename");
 			if (fileNameObj) {
 				fileName = `file_${message.id}_${fileNameObj.fileName}`;
 			} else {
-				let ext =
-					mimeDB[message.media.document.mimeType]?.extensions[0];
+				let ext = mimeDB[message.media.document.mimeType]?.extensions[0];
 				if (ext) {
 					fileName += "." + ext;
 				}
@@ -456,7 +452,7 @@ const circularStringify = (circularString, indent = 2) => {
 					? undefined // Duplicate reference found, discard key
 					: cache.push(value) && value // Store value in our collection
 				: value,
-		indent
+		indent,
 	);
 	cache = null;
 	return retVal;

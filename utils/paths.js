@@ -24,15 +24,9 @@ class PathsManager {
 	configure(options = {}) {
 		const nextRoot = options.root ? resolvePath(options.root) : this.root;
 		this.root = nextRoot;
-		this.export = options.exportDir
-			? resolvePath(options.exportDir)
-			: path.join(this.root, "export");
-		this.config = options.configFile
-			? resolvePath(options.configFile)
-			: path.join(this.root, "config.json");
-		this.logs = options.logsDir
-			? resolvePath(options.logsDir)
-			: path.join(this.root, "logs");
+		this.export = options.exportDir ? resolvePath(options.exportDir) : path.join(this.root, "export");
+		this.config = options.configFile ? resolvePath(options.configFile) : path.join(this.root, "config.json");
+		this.logs = options.logsDir ? resolvePath(options.logsDir) : path.join(this.root, "logs");
 		this.lastSelection = path.join(this.export, "last_selection.json");
 		this.dialogList = path.join(this.export, "dialog_list.json");
 		this.rawDialogList = path.join(this.export, "raw_dialog_list.json");

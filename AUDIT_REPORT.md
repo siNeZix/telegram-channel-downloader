@@ -10,14 +10,14 @@
 
 ## Summary of Changes
 
-| Phase | Category | Issues | Fixed |
-|-------|----------|--------|-------|
-| 1 | Security | 6 | 6 |
-| 2 | Stability | 20 | 20 |
-| 3 | Code Quality | 19 | 19 |
-| 4 | Performance | 6 | 6 |
-| 5 | Infrastructure | 14 | 14 |
-| **Total** | | **86** | **86** |
+| Phase     | Category       | Issues | Fixed  |
+| --------- | -------------- | ------ | ------ |
+| 1         | Security       | 6      | 6      |
+| 2         | Stability      | 20     | 20     |
+| 3         | Code Quality   | 19     | 19     |
+| 4         | Performance    | 6      | 6      |
+| 5         | Infrastructure | 14     | 14     |
+| **Total** |                | **86** | **86** |
 
 `npm audit`: **10 vulnerabilities → 0 vulnerabilities**
 
@@ -37,6 +37,7 @@
 **Files:** `validators/ffmpeg_validator.js`, `services/ValidationService.js`
 **Risk:** `escapePathForCmd()` only wrapped paths in double quotes without sanitizing embedded quotes. A malicious filename like `test"; calc; ".mp4` would execute arbitrary commands.
 **Fix:**
+
 - Added `spawn` import to `ffmpeg_validator.js`
 - Extended `execPromise()` to accept arrays `[binary, ...args]` and spawn directly via `child_process.spawn()`
 - All validation functions (`validateImage`, `validateVideo`, `validateVideoDeep`, `validateVideoSampled`) now pass argument arrays instead of shell strings
@@ -47,6 +48,7 @@
 **File:** `modules/auth.js:59-60`
 **Risk:** `deviceModel: "PC"`, `systemVersion: "Windows 11"` — identical for all users. Telegram can fingerprint and rate-limit collectively.
 **Fix:**
+
 - Added `const os = require("os")`
 - `deviceModel` now uses `os.platform()` check
 - `systemVersion` uses `os.release()` — reflects actual host OS
@@ -82,6 +84,7 @@
 **File:** `utils/logger.js:200-209`
 **Risk:** Stream error handler sets `debugStream = null` without synchronization. Concurrent `write()` can null-dereference.
 **Fix:**
+
 - Added `initInProgress` flag
 - `init()` guarded against concurrent calls
 - try/catch/finally around initialization
@@ -98,6 +101,7 @@
 **File:** `services/DownloadManager.js:386-391`
 **Risk:** `this.channelId`, `this.outputFolder`, etc. overwritten by concurrent batch calls.
 **Fix:**
+
 - Removed instance property assignments
 - Introduced batch-scoped variables (`batchChannelId`, `batchOutputFolder`, `batchFFmpegPaths`, `batchDeepValidation`)
 - `downloadMedia()` and `deleteInvalidFile()` now accept `ffmpegPaths` and `deepValidation` as parameters
@@ -147,11 +151,11 @@
 
 ### 3.3 Dead code removed
 
-| File | Removed |
-|------|---------|
-| `index.js:136` | `const channelId = ""` |
-| `validators/index.js:637-642` | Unused `escapePathForCmd()` |
-| `validators/index.js:710` | `escapePathForCmd` from exports |
+| File                          | Removed                         |
+| ----------------------------- | ------------------------------- |
+| `index.js:136`                | `const channelId = ""`          |
+| `validators/index.js:637-642` | Unused `escapePathForCmd()`     |
+| `validators/index.js:710`     | `escapePathForCmd` from exports |
 
 ### 3.4 Unified logging in config.js
 
@@ -199,13 +203,13 @@
 
 ### 5.1 Missing configuration files (added)
 
-| File | Purpose |
-|------|---------|
-| `.nvmrc` | Node.js version pin (20) |
-| `.editorconfig` | Consistent editor settings |
-| `.eslintrc.json` | ESLint rules |
-| `.prettierrc` | Prettier formatting |
-| `.prettierignore` | Prettier exclusions |
+| File              | Purpose                    |
+| ----------------- | -------------------------- |
+| `.nvmrc`          | Node.js version pin (20)   |
+| `.editorconfig`   | Consistent editor settings |
+| `.eslintrc.json`  | ESLint rules               |
+| `.prettierrc`     | Prettier formatting        |
+| `.prettierignore` | Prettier exclusions        |
 
 ### 5.2 Scripts added to package.json
 

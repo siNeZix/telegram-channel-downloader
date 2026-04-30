@@ -1,9 +1,6 @@
 const config = require("../utils/config");
 const { logMessage } = require("../utils/helper");
-const {
-	getLastSelection,
-	updateLastSelection,
-} = require("../utils/file_helper");
+const { getLastSelection, updateLastSelection } = require("../utils/file_helper");
 const db = require("../utils/db");
 const paths = require("../utils/paths");
 const { MessageService } = require("../services/MessageService");
@@ -39,8 +36,12 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 		totalBytesDownloaded: 0,
 	};
 
-	logMessage.fetch(`=== Starting getMessages: channelId=${channelId}, check=${enableCheck}, deep=${deepValidation} ===`);
-	logMessage.fetch(`Config: messageLimit=${config.get('download.messageLimit')}, fastForwardMessageLimit=${config.get('download.fastForwardMessageLimit')}, lastKnownOffsetId=${lastKnownOffsetId}`);
+	logMessage.fetch(
+		`=== Starting getMessages: channelId=${channelId}, check=${enableCheck}, deep=${deepValidation} ===`,
+	);
+	logMessage.fetch(
+		`Config: messageLimit=${config.get("download.messageLimit")}, fastForwardMessageLimit=${config.get("download.fastForwardMessageLimit")}, lastKnownOffsetId=${lastKnownOffsetId}`,
+	);
 
 	try {
 		const fetchStats = await messageService.fetchMessages(
@@ -79,9 +80,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 
 		return true;
 	} catch (err) {
-		logMessage.error(
-			`[FETCH] Error in getMessages: ${err?.message || String(err)}`,
-		);
+		logMessage.error(`[FETCH] Error in getMessages: ${err?.message || String(err)}`);
 		throw err;
 	} finally {
 		downloadManager.cleanup();
@@ -96,7 +95,9 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 	const messageService = new MessageService(client);
 	const downloadManager = new DownloadManager(client);
 
-	logMessage.fetch(`=== Starting getMessageDetail: channelId=${channelId}, messageIds=${JSON.stringify(messageIds)}, check=${enableCheck}, deep=${deepValidation} ===`);
+	logMessage.fetch(
+		`=== Starting getMessageDetail: channelId=${channelId}, messageIds=${JSON.stringify(messageIds)}, check=${enableCheck}, deep=${deepValidation} ===`,
+	);
 
 	// Initialize FFmpeg for validation if needed
 	let ffmpegPaths = null;
@@ -138,9 +139,7 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 		logMessage.fetch(`=== getMessageDetail completed ===`);
 		return result;
 	} catch (err) {
-		logMessage.error(
-			`[FETCH] Error in getMessageDetail: ${err?.message || String(err)}`,
-		);
+		logMessage.error(`[FETCH] Error in getMessageDetail: ${err?.message || String(err)}`);
 		throw err;
 	} finally {
 		downloadManager.cleanup();
@@ -156,9 +155,7 @@ const sendMessage = async (client, channelId, message) => {
 
 		logMessage.success(`[MSG] Message sent successfully with ID: ${res.id}`);
 	} catch (err) {
-		logMessage.error(
-			`[MSG] Error in sendMessage: ${err?.message || String(err)}`,
-		);
+		logMessage.error(`[MSG] Error in sendMessage: ${err?.message || String(err)}`);
 	}
 };
 
@@ -166,9 +163,7 @@ const sendMessage = async (client, channelId, message) => {
 // Обработчик новых сообщений для прослушивания канала
 const handleNewMessage = async (event, client, channelId, options = {}) => {
 	const messageChatId =
-		event.message?.peerId?.chatId ||
-		event.message?.peerId?.channelId ||
-		event.message?.peerId?.userId;
+		event.message?.peerId?.chatId || event.message?.peerId?.channelId || event.message?.peerId?.userId;
 	if (Number(messageChatId) !== Number(channelId)) {
 		return;
 	}
@@ -199,9 +194,9 @@ const startChannelListener = async (client, channelId, options = {}) => {
 			logMessage.init(`Found last selection: channelId=${lastSelection.channelId}, name=${lastChannelName}`);
 			logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
 			const useLastChannel = await booleanInput("Do you want to continue listening to this channel?", true);
-			
+
 			if (!useLastChannel) {
-				// Поль��ователь хочет выбрать другой канал
+				// Пользователь хочет выбрать другой канал
 				logMessage.init(`User wants to select new channel`);
 				const wantToSearch = await booleanInput("Do you want to search for a channel?", false);
 				if (wantToSearch) {
@@ -235,11 +230,8 @@ const startChannelListener = async (client, channelId, options = {}) => {
 
 	const dialogName = await getDialogName(client, channelId, options);
 	logMessage.success(`[LISTEN] Started listening to: ${dialogName}`);
-	
-	client.addEventHandler(
-		(event) => handleNewMessage(event, client, channelId, options),
-		new NewMessage({})
-	);
+
+	client.addEventHandler((event) => handleNewMessage(event, client, channelId, options), new NewMessage({}));
 };
 
 const rebuildDatabaseFromApi = async (client, channelId, options = {}) => {
@@ -253,7 +245,9 @@ const rebuildDatabaseFromApi = async (client, channelId, options = {}) => {
 			outputFolder,
 			includeSnapshots: false,
 		});
-		logMessage.success(`[DB-REBUILD] Database rebuild complete: stored=${result.totalStored}, media=${result.totalMediaFound}`);
+		logMessage.success(
+			`[DB-REBUILD] Database rebuild complete: stored=${result.totalStored}, media=${result.totalMediaFound}`,
+		);
 		return result;
 	} catch (err) {
 		logMessage.error(`[DB-REBUILD] Error rebuilding database: ${err?.message || String(err)}`);
@@ -266,7 +260,9 @@ const rebuildDatabaseFromApi = async (client, channelId, options = {}) => {
 // --- Download messages by IDs ---
 const downloadMessagesByIds = async (client, channelId, messageIds, options = {}) => {
 	try {
-		logMessage.dl(`=== Starting downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)} ===`);
+		logMessage.dl(
+			`=== Starting downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)} ===`,
+		);
 		const outputFolder = resolveOutputFolder(channelId, options);
 		await getMessageDetail(client, channelId, messageIds, { ...options, outputFolder });
 		logMessage.success("[DL] Done with downloading messages");

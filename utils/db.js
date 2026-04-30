@@ -137,7 +137,7 @@ const extractRecordFromRawMessage = (rawMessage, outputFolder) => {
 		id: rawMessage.id,
 		date: toTimestamp(rawMessage.date),
 		message_text: rawMessage.message ?? null,
-		is_out: rawMessage.out === undefined ? null : (rawMessage.out ? 1 : 0),
+		is_out: rawMessage.out === undefined ? null : rawMessage.out ? 1 : 0,
 		sender_id: toSqlInteger(getSenderId(rawMessage)),
 		has_media: hasMedia ? 1 : 0,
 		media_type: mediaType || null,
@@ -159,13 +159,14 @@ const extractRecordFromProcessedMessage = (processedMessage, outputFolder) => {
 	const normalizedMediaPath = normalizeMediaPath(processedMessage.mediaPath, outputFolder);
 	const fallbackMediaPath = buildMediaPathFromColumns(processedMessage.mediaType, processedMessage.mediaName);
 	const mediaPath = normalizedMediaPath || fallbackMediaPath;
-	const hasMedia = processedMessage.isMedia || !!mediaPath || !!processedMessage.mediaType || !!processedMessage.mediaName;
+	const hasMedia =
+		processedMessage.isMedia || !!mediaPath || !!processedMessage.mediaType || !!processedMessage.mediaName;
 
 	return {
 		id: processedMessage.id,
 		date: toTimestamp(processedMessage.date),
 		message_text: processedMessage.message ?? null,
-		is_out: processedMessage.out === undefined ? null : (processedMessage.out ? 1 : 0),
+		is_out: processedMessage.out === undefined ? null : processedMessage.out ? 1 : 0,
 		sender_id: toSqlInteger(processedMessage.sender),
 		has_media: hasMedia ? 1 : 0,
 		media_type: processedMessage.mediaType || null,
@@ -321,7 +322,9 @@ const migrateLegacyJsonSchema = (db, outputFolder) => {
 	}
 
 	logMessage().db("[DB] Legacy JSON schema detected, migrating to normalized schema");
-	const legacyRows = db.prepare("SELECT id, date, raw_json, processed_json, downloaded FROM messages ORDER BY id ASC").all();
+	const legacyRows = db
+		.prepare("SELECT id, date, raw_json, processed_json, downloaded FROM messages ORDER BY id ASC")
+		.all();
 
 	const migrate = db.transaction(() => {
 		createMessagesTable(db, "messages_migrated");
@@ -378,7 +381,12 @@ const ensureSchema = (db, outputFolder) => {
 	createMessagesTable(db);
 	migrateLegacyJsonSchema(db, outputFolder);
 	createMessagesTable(db);
-	const columns = new Set(db.prepare("PRAGMA table_info(messages)").all().map((column) => column.name));
+	const columns = new Set(
+		db
+			.prepare("PRAGMA table_info(messages)")
+			.all()
+			.map((column) => column.name),
+	);
 	if (!columns.has("validation_status")) {
 		db.exec("ALTER TABLE messages ADD COLUMN validation_status TEXT");
 	}
@@ -444,7 +452,9 @@ const saveMessages = (channelId, outputFolder, rawMessages, processedMessages) =
 	const db = initDatabase(channelId, outputFolder);
 	const upsert = getUpsertStatement(db);
 
-	logMessage().db(`[DB] saveMessages: channelId=${channelId}, rawCount=${rawMessages.length}, processedCount=${processedMessages.length}`);
+	logMessage().db(
+		`[DB] saveMessages: channelId=${channelId}, rawCount=${rawMessages.length}, processedCount=${processedMessages.length}`,
+	);
 
 	let savedCount = 0;
 	let insertMany;
@@ -602,8 +612,8 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 
 	let count = 0;
 	const startTime = Date.now();
-	const rawStream = fs.createWriteStream(rawFilePath, { flags: 'a', encoding: 'utf8' });
-	const processedStream = fs.createWriteStream(processedFilePath, { flags: 'a', encoding: 'utf8' });
+	const rawStream = fs.createWriteStream(rawFilePath, { flags: "a", encoding: "utf8" });
+	const processedStream = fs.createWriteStream(processedFilePath, { flags: "a", encoding: "utf8" });
 	for (const row of getMessagesForExport(channelId, outputFolder, "all")) {
 		if (row.raw_json) {
 			rawStream.write(row.raw_json + "\n");
@@ -657,7 +667,9 @@ const closeDatabase = (outputFolder) => {
 const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
-		logMessage().db(`[DB] setFileDownloaded: channelId=${channelId}, msgId=${messageId}, status=${status}, result=NULL_DB`);
+		logMessage().db(
+			`[DB] setFileDownloaded: channelId=${channelId}, msgId=${messageId}, status=${status}, result=NULL_DB`,
+		);
 		return false;
 	}
 
@@ -666,7 +678,9 @@ const setFileDownloaded = (channelId, outputFolder, messageId, status = 1) => {
 		const result = db.prepare("UPDATE messages SET downloaded = ? WHERE id = ?").run(status, messageId);
 		const elapsed = Date.now() - startTime;
 		const changes = result ? result.changes : 0;
-		logMessage().db(`[DB] setFileDownloaded: msgId=${messageId}, status=${status}, changes=${changes}, time=${elapsed}ms`);
+		logMessage().db(
+			`[DB] setFileDownloaded: msgId=${messageId}, status=${status}, changes=${changes}, time=${elapsed}ms`,
+		);
 		return changes > 0;
 	} catch (e) {
 		logMessage().error(`[DB] Error setting downloaded flag for message ${messageId}: ${e.message}`);
@@ -710,23 +724,29 @@ const setValidationState = (channelId, outputFolder, messageId, state = {}) => {
 
 	const startTime = Date.now();
 	try {
-		const result = db.prepare(`
+		const result = db
+			.prepare(
+				`
 			UPDATE messages
 			SET validation_status = ?,
 				validation_profile = ?,
 				validation_error = ?,
 				validated_at = ?
 			WHERE id = ?
-		`).run(
-			state.status ?? null,
-			state.profile ?? null,
-			state.error ?? null,
-			state.validatedAt ?? Date.now(),
-			messageId,
-		);
+		`,
+			)
+			.run(
+				state.status ?? null,
+				state.profile ?? null,
+				state.error ?? null,
+				state.validatedAt ?? Date.now(),
+				messageId,
+			);
 		const elapsed = Date.now() - startTime;
 		const changes = result ? result.changes : 0;
-		logMessage().db(`[DB] setValidationState: msgId=${messageId}, status=${state.status ?? 'null'}, profile=${state.profile ?? 'null'}, changes=${changes}, time=${elapsed}ms`);
+		logMessage().db(
+			`[DB] setValidationState: msgId=${messageId}, status=${state.status ?? "null"}, profile=${state.profile ?? "null"}, changes=${changes}, time=${elapsed}ms`,
+		);
 		return changes > 0;
 	} catch (e) {
 		logMessage().error(`[DB] Error setting validation state for message ${messageId}: ${e.message}`);
@@ -737,7 +757,9 @@ const setValidationState = (channelId, outputFolder, messageId, state = {}) => {
 const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => {
 	const db = getDatabase(channelId, outputFolder);
 	if (!db) {
-		logMessage().db(`[DB] syncDownloadedFromSnapshots: channelId=${channelId}, snapshots=${snapshotFiles.size}, result=NULL_DB`);
+		logMessage().db(
+			`[DB] syncDownloadedFromSnapshots: channelId=${channelId}, snapshots=${snapshotFiles.size}, result=NULL_DB`,
+		);
 		return 0;
 	}
 
@@ -747,7 +769,9 @@ const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => 
 	let processedCount = 0;
 	const startTime = Date.now();
 	const updateStmt = db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?");
-	const selectStmt = db.prepare("SELECT id, media_path, media_type, media_name FROM messages WHERE downloaded = 0 AND has_media = 1");
+	const selectStmt = db.prepare(
+		"SELECT id, media_path, media_type, media_name FROM messages WHERE downloaded = 0 AND has_media = 1",
+	);
 	const rows = selectStmt.all();
 	const updateMany = db.transaction(() => {
 		for (const row of rows) {
@@ -756,7 +780,7 @@ const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => 
 			const mediaPathVariants = getStoredMediaPathVariants(storedMediaPath);
 			const foundInSnapshots = [...mediaPathVariants].some((storedPath) => snapshotFiles.has(storedPath));
 			if (foundInSnapshots) {
-				db.prepare("UPDATE messages SET downloaded = 1 WHERE id = ?").run(row.id);
+				updateStmt.run(row.id);
 				updatedCount++;
 			}
 		}
@@ -764,7 +788,9 @@ const syncDownloadedFromSnapshots = (channelId, outputFolder, snapshotFiles) => 
 
 	updateMany();
 	const elapsed = Date.now() - startTime;
-	logMessage().db(`[DB] syncDownloadedFromSnapshots: processed=${processedCount} rows, updated=${updatedCount}, time=${elapsed}ms`);
+	logMessage().db(
+		`[DB] syncDownloadedFromSnapshots: processed=${processedCount} rows, updated=${updatedCount}, time=${elapsed}ms`,
+	);
 	return updatedCount;
 };
 
@@ -788,7 +814,11 @@ const getMediaPathMap = (channelId, outputFolder) => {
 
 	const map = new Map();
 	try {
-		for (const row of db.prepare("SELECT id, media_path, media_type, media_name FROM messages WHERE has_media = 1 AND downloaded = 0").iterate()) {
+		for (const row of db
+			.prepare(
+				"SELECT id, media_path, media_type, media_name FROM messages WHERE has_media = 1 AND downloaded = 0",
+			)
+			.iterate()) {
 			const mediaPath = row.media_path || buildMediaPathFromColumns(row.media_type, row.media_name);
 			if (mediaPath) {
 				const variants = getStoredMediaPathVariants(mediaPath);

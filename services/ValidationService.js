@@ -93,7 +93,20 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	const sampleTimeout = getScaledTimeout(filePath, SAMPLE_DECODE_TIMEOUT);
 
 	for (const point of samplePoints) {
-		const sampleCmd = [ffmpegBin, "-v", "error", "-i", filePath, "-ss", point.toFixed(3), "-t", String(SAMPLE_WINDOW_SECONDS), "-f", "null", "-"];
+		const sampleCmd = [
+			ffmpegBin,
+			"-v",
+			"error",
+			"-i",
+			filePath,
+			"-ss",
+			point.toFixed(3),
+			"-t",
+			String(SAMPLE_WINDOW_SECONDS),
+			"-f",
+			"null",
+			"-",
+		];
 		const result = await execPromise(sampleCmd, sampleTimeout);
 
 		if (result.exitCode === 0) {
@@ -103,7 +116,9 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 
 		if (result.timedOut) {
 			passedCount++;
-			logMessage.valid(`[VALID] Sampled: timeout at ${point.toFixed(1)}s (counted as pass): ${path.basename(filePath)}`);
+			logMessage.valid(
+				`[VALID] Sampled: timeout at ${point.toFixed(1)}s (counted as pass): ${path.basename(filePath)}`,
+			);
 			continue;
 		}
 
@@ -111,7 +126,9 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 
 		if (fatalErrors.length === 0) {
 			passedCount++;
-			logMessage.valid(`[VALID] Sampled: non-fatal errors at ${point.toFixed(1)}s (counted as pass), nonFatal=${nonFatalErrors.length}: ${path.basename(filePath)}`);
+			logMessage.valid(
+				`[VALID] Sampled: non-fatal errors at ${point.toFixed(1)}s (counted as pass), nonFatal=${nonFatalErrors.length}: ${path.basename(filePath)}`,
+			);
 			continue;
 		}
 
@@ -125,7 +142,20 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	const needTail = duration >= 15;
 	if (needTail) {
 		const tailWindow = Math.min(12, Math.max(6, Math.floor(duration * 0.15)));
-		const tailCmd = [ffmpegBin, "-v", "error", "-sseof", String(-tailWindow), "-i", filePath, "-t", String(tailWindow), "-f", "null", "-"];
+		const tailCmd = [
+			ffmpegBin,
+			"-v",
+			"error",
+			"-sseof",
+			String(-tailWindow),
+			"-i",
+			filePath,
+			"-t",
+			String(tailWindow),
+			"-f",
+			"null",
+			"-",
+		];
 		const tailTimeout = getScaledTimeout(filePath, TAIL_DECODE_TIMEOUT);
 		const tailResult = await execPromise(tailCmd, tailTimeout);
 
@@ -154,13 +184,22 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 		if (failedPoints.length === 0) {
 			return { valid: true, error: null };
 		}
-		const summary = failedPoints.map(f => `${f.point.toFixed ? f.point.toFixed(1) : f.point}s: ${f.fatalErrors.slice(0, 2).join('; ')}`).join(' | ');
-		logMessage.valid(`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, accepted with warnings: ${path.basename(filePath)} (${summary})`);
+		const summary = failedPoints
+			.map((f) => `${f.point.toFixed ? f.point.toFixed(1) : f.point}s: ${f.fatalErrors.slice(0, 2).join("; ")}`)
+			.join(" | ");
+		logMessage.valid(
+			`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, accepted with warnings: ${path.basename(filePath)} (${summary})`,
+		);
 		return { valid: true, error: null };
 	}
 
-	const allFatal = failedPoints.flatMap(f => f.fatalErrors).join("; ").substring(0, 200);
-	logMessage.valid(`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, rejected: ${path.basename(filePath)} (fatal: ${allFatal})`);
+	const allFatal = failedPoints
+		.flatMap((f) => f.fatalErrors)
+		.join("; ")
+		.substring(0, 200);
+	logMessage.valid(
+		`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, rejected: ${path.basename(filePath)} (fatal: ${allFatal})`,
+	);
 	return { valid: false, error: `ffmpeg sampled decode: ${passedCount}/${totalAttempts} passed; fatal: ${allFatal}` };
 }
 
@@ -277,7 +316,9 @@ class ValidationService {
 					break;
 				}
 
-				logMessage.warn(`[VALID] Quarantine retry ${attempt}/${QUARANTINE_RETRY_ATTEMPTS} for ${path.basename(filePath)}: ${error.code}`);
+				logMessage.warn(
+					`[VALID] Quarantine retry ${attempt}/${QUARANTINE_RETRY_ATTEMPTS} for ${path.basename(filePath)}: ${error.code}`,
+				);
 				await sleep(QUARANTINE_RETRY_DELAY_MS);
 			}
 		}
@@ -300,7 +341,11 @@ class ValidationService {
 			} catch (copyError) {
 				lastError = copyError;
 				if (fs.existsSync(target.filePath)) {
-					try { fs.unlinkSync(target.filePath); } catch (e) {}
+					try {
+						fs.unlinkSync(target.filePath);
+					} catch {
+						// best effort cleanup
+					}
 				}
 			}
 		}

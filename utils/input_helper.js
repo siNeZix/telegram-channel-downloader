@@ -2,191 +2,160 @@ const inquirer = require("inquirer");
 const { MEDIA_TYPES, logMessage } = require("./helper");
 
 const promptSafe = async (question) => {
-  try {
-    return await inquirer.prompt(question);
-  } catch (err) {
-    if (err?.message?.includes("closed") || err?.code === "ENOTTY" || err?.message?.includes("stdin")) {
-      logMessage.error("[INPUT] Interactive input unavailable (stdin closed). Exiting.");
-      process.exit(130);
-    }
-    throw err;
-  }
+	try {
+		return await inquirer.prompt(question);
+	} catch (err) {
+		if (err?.message?.includes("closed") || err?.code === "ENOTTY" || err?.message?.includes("stdin")) {
+			logMessage.error("[INPUT] Interactive input unavailable (stdin closed).");
+			throw new Error("Interactive input unavailable (stdin closed)");
+		}
+		throw err;
+	}
 };
 
 const mobileNumberInput = async () => {
-  const question = {
-    type: "input",
-    name: "phoneNumber",
-    message: "Please enter your mobile number with country code (example: +14155552671):",
-    validate: function (input) {
-      const normalized = String(input || "").trim();
-      // Accept E.164-like numbers with optional leading +
-      const regex = /^\+?\d{8,15}$/;
-      if (!regex.test(input)) {
-        return "Please enter a valid number in international format, e.g. +14155552671.";
-      }
-      return true; // Input is valid
-    },
-  };
+	const question = {
+		type: "input",
+		name: "phoneNumber",
+		message: "Please enter your mobile number with country code (example: +14155552671):",
+		validate: function (input) {
+			const normalized = String(input || "").trim();
+			// Accept E.164-like numbers with optional leading +
+			const regex = /^\+?\d{8,15}$/;
+			if (!regex.test(input)) {
+				return "Please enter a valid number in international format, e.g. +14155552671.";
+			}
+			return true; // Input is valid
+		},
+	};
 
-  const { phoneNumber } = await promptSafe(question);
-  return String(phoneNumber).trim();
+	const { phoneNumber } = await promptSafe(question);
+	return String(phoneNumber).trim();
 };
 
 const optInput = async () => {
-  const question = {
-    type: "input",
-    name: "otp",
-    message: "Please enter OTP from Telegram (5 or 6 digits):",
-    validate: function (input) {
-      // Telegram codes are usually 5 digits, but can be 6 in some regions/flows.
-      const regex = /^\d{5,6}$/;
-      if (!regex.test(input)) {
-        return "Please enter a valid numeric OTP (5 or 6 digits).";
-      }
-      return true; // Input is valid
-    },
-  };
+	const question = {
+		type: "input",
+		name: "otp",
+		message: "Please enter OTP from Telegram (5 or 6 digits):",
+		validate: function (input) {
+			// Telegram codes are usually 5 digits, but can be 6 in some regions/flows.
+			const regex = /^\d{5,6}$/;
+			if (!regex.test(input)) {
+				return "Please enter a valid numeric OTP (5 or 6 digits).";
+			}
+			return true; // Input is valid
+		},
+	};
 
-  const { otp } = await inquirer.prompt(question);
-  return otp;
+	const { otp } = await inquirer.prompt(question);
+	return otp;
 };
 
 const textInput = async (message = "Please Enter") => {
-  const question = {
-    type: "input",
-    name: "text",
-    message: message,
-  };
-  const { text } = await inquirer.prompt(question);
-  return text;
+	const question = {
+		type: "input",
+		name: "text",
+		message: message,
+	};
+	const { text } = await inquirer.prompt(question);
+	return text;
 };
 
-const numberInput = async (
-  message = "Please enter a number",
-  min = -Infinity,
-  max = Infinity
-) => {
-  const question = {
-    type: "input",
-    name: "number",
-    message: message,
-    validate: function (input) {
-      const number = parseFloat(input);
-      if (isNaN(number)) {
-        return "Please enter a valid number.";
-      }
-      if (number > max || number < min) {
-        return `Entered number - ${number} is not between ${max} and ${min}.`;
-      }
+const numberInput = async (message = "Please enter a number", min = -Infinity, max = Infinity) => {
+	const question = {
+		type: "input",
+		name: "number",
+		message: message,
+		validate: function (input) {
+			const number = parseFloat(input);
+			if (isNaN(number)) {
+				return "Please enter a valid number.";
+			}
+			if (number > max || number < min) {
+				return `Entered number - ${number} is not between ${max} and ${min}.`;
+			}
 
-      return true;
-    },
-  };
+			return true;
+		},
+	};
 
-  const { number } = await inquirer.prompt(question);
-  return parseFloat(number);
+	const { number } = await inquirer.prompt(question);
+	return parseFloat(number);
 };
 
-const booleanInput = async (
-  message = "Please answer with yes or no",
-  defaultValue = true
-) => {
-  const question = {
-    type: "confirm",
-    name: "confirm",
-    message: message,
-    default: defaultValue,
-  };
+const booleanInput = async (message = "Please answer with yes or no", defaultValue = true) => {
+	const question = {
+		type: "confirm",
+		name: "confirm",
+		message: message,
+		default: defaultValue,
+	};
 
-  const { confirm } = await inquirer.prompt(question);
-  return confirm;
+	const { confirm } = await inquirer.prompt(question);
+	return confirm;
 };
 
 const selectInput = async (message = "Please select", optionsArr = []) => {
-  const question = {
-    type: "list",
-    name: "input",
-    message: message,
-    choices: optionsArr,
-  };
+	const question = {
+		type: "list",
+		name: "input",
+		message: message,
+		choices: optionsArr,
+	};
 
-  const { input } = await inquirer.prompt(question);
-  return input;
+	const { input } = await inquirer.prompt(question);
+	return input;
 };
 
-const multipleChoice = async (
-  message = "Please select multiple choices",
-  optionsArr,
-  defaultOptions = []
-) => {
-  const question = {
-    type: "checkbox",
-    name: "input",
-    message: message,
-    default: defaultOptions,
-    choices: optionsArr,
-  }
-  const { input } = await inquirer.prompt(question);
-  return input;
+const multipleChoice = async (message = "Please select multiple choices", optionsArr, defaultOptions = []) => {
+	const question = {
+		type: "checkbox",
+		name: "input",
+		message: message,
+		default: defaultOptions,
+		choices: optionsArr,
+	};
+	const { input } = await inquirer.prompt(question);
+	return input;
 };
-
 
 const downloadOptionInput = async () => {
-  let fileTypeArray = [
-    MEDIA_TYPES.IMAGE,
-    MEDIA_TYPES.VIDEO,
-    MEDIA_TYPES.AUDIO,
-    "pdf",
-    "zip",
-    "custom",
-    "All",
-  ];
+	let fileTypeArray = [MEDIA_TYPES.IMAGE, MEDIA_TYPES.VIDEO, MEDIA_TYPES.AUDIO, "pdf", "zip", "custom", "All"];
 
-  const defaultSelected = [
-    MEDIA_TYPES.IMAGE,
-    MEDIA_TYPES.VIDEO,
-    MEDIA_TYPES.AUDIO,
-    'pdf'
-  ];
-  let fileExtensions = await multipleChoice(
-    "Choose file to download",
-    fileTypeArray,
-    defaultSelected
-  );
+	const defaultSelected = [MEDIA_TYPES.IMAGE, MEDIA_TYPES.VIDEO, MEDIA_TYPES.AUDIO, "pdf"];
+	let fileExtensions = await multipleChoice("Choose file to download", fileTypeArray, defaultSelected);
 
-  if (fileExtensions?.includes("custom")) {
-    let customExtensions = await textInput(
-      "Enter file extension separated by comma: "
-    );
-    const customExtensionsArray = customExtensions
-      ?.split(",")
-      ?.map((e) => e?.trim().replace(".", "")?.toLowerCase());
-    fileExtensions = [...fileExtensions, ...customExtensionsArray];
-  }
+	if (fileExtensions?.includes("custom")) {
+		let customExtensions = await textInput("Enter file extension separated by comma: ");
+		const customExtensionsArray = customExtensions
+			?.split(",")
+			?.map((e) => e?.trim().replace(".", "")?.toLowerCase());
+		fileExtensions = [...fileExtensions, ...customExtensionsArray];
+	}
 
-  const filesToDownload = {
-    [MEDIA_TYPES.WEBPAGE]: true,
-    [MEDIA_TYPES.POLL]: true,
-    [MEDIA_TYPES.GEO]: true,
-    [MEDIA_TYPES.CONTACT]: true,
-    [MEDIA_TYPES.VENUE]: true,
-    [MEDIA_TYPES.STICKER]: true,
-  };
-  fileExtensions?.map((e) => {
-    filesToDownload[e] = true;
-  });
+	const filesToDownload = {
+		[MEDIA_TYPES.WEBPAGE]: true,
+		[MEDIA_TYPES.POLL]: true,
+		[MEDIA_TYPES.GEO]: true,
+		[MEDIA_TYPES.CONTACT]: true,
+		[MEDIA_TYPES.VENUE]: true,
+		[MEDIA_TYPES.STICKER]: true,
+	};
+	fileExtensions?.map((e) => {
+		filesToDownload[e] = true;
+	});
 
-  return filesToDownload;
+	return filesToDownload;
 };
 
 module.exports = {
-  textInput,
-  optInput,
-  mobileNumberInput,
-  numberInput,
-  booleanInput,
-  selectInput,
-  multipleChoice,
-  downloadOptionInput
+	textInput,
+	optInput,
+	mobileNumberInput,
+	numberInput,
+	booleanInput,
+	selectInput,
+	multipleChoice,
+	downloadOptionInput,
 };

@@ -6,12 +6,7 @@ const { updateCredentials, getCredentials } = require("../utils/file_helper");
 const { StringSession } = require("telegram/sessions");
 const { logMessage } = require("../utils/helper");
 
-const {
-	textInput,
-	mobileNumberInput,
-	optInput,
-	selectInput,
-} = require("../utils/input_helper");
+const { textInput, mobileNumberInput, optInput, selectInput } = require("../utils/input_helper");
 
 const OTP_METHOD = {
 	SMS: "sms",
@@ -19,8 +14,7 @@ const OTP_METHOD = {
 };
 const MAX_AUTH_RETRIES = 3;
 
-const getErrorText = (err) =>
-	(err?.errorMessage || err?.message || String(err) || "").toUpperCase();
+const getErrorText = (err) => (err?.errorMessage || err?.message || String(err) || "").toUpperCase();
 
 const parseFloodWaitSeconds = (err) => {
 	const directSeconds = Number(err?.seconds);
@@ -43,7 +37,9 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 	const credentials = getCredentials();
 	const { apiId, apiHash, sessionId: savedSessionId } = credentials;
 
-	logMessage.auth(`Auth init: apiId=${apiId ? "present" : "MISSING"}, sessionId=${savedSessionId ? "present" : "empty"}, otpPreference=${otpPreference}`);
+	logMessage.auth(
+		`Auth init: apiId=${apiId ? "present" : "MISSING"}, sessionId=${savedSessionId ? "present" : "empty"}, otpPreference=${otpPreference}`,
+	);
 
 	if (!apiId || !apiHash) {
 		logMessage.error("[AUTH] Missing apiId or apiHash in credentials");
@@ -63,7 +59,9 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 		langCode: "en",
 		systemLangCode: "en",
 	};
-	logMessage.auth(`Creating TelegramClient with config: deviceModel=${clientConfig.deviceModel}, appVersion=${clientConfig.appVersion}, connectionRetries=${clientConfig.connectionRetries}`);
+	logMessage.auth(
+		`Creating TelegramClient with config: deviceModel=${clientConfig.deviceModel}, appVersion=${clientConfig.appVersion}, connectionRetries=${clientConfig.connectionRetries}`,
+	);
 
 	const client = new TelegramClient(stringSession, apiId, apiHash, clientConfig);
 	logMessage.auth("TelegramClient instantiated");
@@ -106,7 +104,9 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 						const errText = getErrorText(err);
 						logMessage.auth(`Auth error callback triggered: ${errText}`);
 						if (errText.includes("PHONE_NUMBER_INVALID")) {
-							logMessage.error("Phone number is invalid. Use full international format, e.g. +14155552671.");
+							logMessage.error(
+								"Phone number is invalid. Use full international format, e.g. +14155552671.",
+							);
 							return;
 						}
 						if (errText.includes("PHONE_CODE_INVALID")) {
@@ -118,7 +118,9 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 							return;
 						}
 						if (errText.includes("FLOOD_WAIT")) {
-							logMessage.error("Too many attempts. Telegram temporarily blocked new login attempts (FLOOD_WAIT).");
+							logMessage.error(
+								"Too many attempts. Telegram temporarily blocked new login attempts (FLOOD_WAIT).",
+							);
 							return;
 						}
 						logMessage.error(`[AUTH] Unexpected auth error: ${errText}`);
@@ -128,11 +130,17 @@ const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 				break;
 			} catch (err) {
 				const floodSeconds = parseFloodWaitSeconds(err);
-				logMessage.auth(`Auth attempt ${attempt} failed: ${err?.errorMessage || err?.message}, floodSeconds=${floodSeconds}`);
+				logMessage.auth(
+					`Auth attempt ${attempt} failed: ${err?.errorMessage || err?.message}, floodSeconds=${floodSeconds}`,
+				);
 				if (floodSeconds && attempt < MAX_AUTH_RETRIES) {
 					const waitSeconds = Math.ceil(floodSeconds) + 2;
-					logMessage.warn(`[AUTH] Flood wait detected. Waiting ${waitSeconds}s before retry ${attempt + 1}/${MAX_AUTH_RETRIES}.`);
-					logMessage.debug(`[AUTH] Flood wait details: raw error=${err?.errorMessage || err?.message}, parsed seconds=${floodSeconds}, calculated wait=${waitSeconds}`);
+					logMessage.warn(
+						`[AUTH] Flood wait detected. Waiting ${waitSeconds}s before retry ${attempt + 1}/${MAX_AUTH_RETRIES}.`,
+					);
+					logMessage.debug(
+						`[AUTH] Flood wait details: raw error=${err?.errorMessage || err?.message}, parsed seconds=${floodSeconds}, calculated wait=${waitSeconds}`,
+					);
 					await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
 					continue;
 				}
