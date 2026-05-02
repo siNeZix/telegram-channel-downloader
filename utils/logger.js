@@ -21,15 +21,19 @@ const originalConsole = {
 };
 
 const ANSI_REGEX = new RegExp(String.fromCharCode(0x1b) + "\\[[0-9;]*m", "g");
+const CURRENT_LOG_NAME = "current.log";
+const DEBUG_LOG_NAME = "debug.log";
+const DEBUG_ARCHIVE_PREFIX = "debug-";
+const ARCHIVE_LOG_REGEX = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
+const DEBUG_ARCHIVE_LOG_REGEX = /^debug-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
 const MAX_ARCHIVE_FILES = 50;
-const MAX_MESSAGE_SIZE_BYTES = 100 * 1024;
 const MAX_DEBUG_LOG_SIZE_BYTES = 1 * 1024 * 1024;
 const MAX_DEBUG_ARCHIVES_TOTAL_SIZE = 5 * 1024 * 1024;
 const MAX_MESSAGE_SIZE_BYTES = 50 * 1024;
 
 let lastLogTimestamp = null;
 let initInProgress = false;
-let lastRotationCheckSize = 0;
+let debugBytesWritten = 0;
 
 const DEBUG_RATE_LIMIT_PER_SECOND = 3;
 const DEBUG_CIRCUIT_BREAKER_MS = 10000;
@@ -242,7 +246,6 @@ function reopenDebugStream() {
 		}
 
 		debugStream = newStream;
-		lastRotationCheckSize = 0;
 	} catch (err) {
 		reportLoggerFailure(err, "Failed to reopen debug stream after rotation");
 	}
@@ -318,15 +321,15 @@ function init() {
 		if (fs.existsSync(currentLogPath)) {
 			const archiveName = formatDateForFilename(new Date()) + ".log";
 			const archivePath = path.join(logsDir, archiveName);
-		try {
-			fs.renameSync(currentLogPath, archivePath);
-		} catch (err) {
 			try {
-				fs.unlinkSync(currentLogPath);
-			} catch {
-				// best effort cleanup
+				fs.renameSync(currentLogPath, archivePath);
+			} catch (err) {
+				try {
+					fs.unlinkSync(currentLogPath);
+				} catch {
+					// best effort cleanup
+				}
 			}
-		}
 		}
 
 		const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
@@ -433,8 +436,12 @@ function write(level, message) {
 
 	const writeToStream = (stream, data) => {
 		const ok = stream.write(data);
-		if (!ok && writePending.length < MAX_PENDING_WRITES) {
-			writePending.push({ stream, data });
+		if (!ok) {
+			if (writePending.length < MAX_PENDING_WRITES) {
+				writePending.push({ stream, data });
+			} else {
+				reportLoggerFailure(new Error("Write pending buffer full"), "Log write dropped due to backpressure");
+			}
 		}
 	};
 
@@ -505,6 +512,14 @@ function close() {
 	if (flushInterval) {
 		clearInterval(flushInterval);
 		flushInterval = null;
+	}
+	// Drain any pending writes before closing streams
+	if (writePending.length > 0) {
+		try {
+			drainPendingWrites();
+		} catch (e) {
+			reportLoggerFailure(e, "Failed to drain pending writes during close");
+		}
 	}
 	if (debugStream) {
 		try {

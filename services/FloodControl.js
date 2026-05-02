@@ -1,7 +1,11 @@
 const { wait } = require("../utils/helper");
 const { logMessage } = require("../utils/helper");
 const config = require("../utils/config");
-const { parseFloodWaitSeconds, getErrorText, isFileReferenceExpired: isFileRefExpired } = require("../utils/flood_utils");
+const {
+	parseFloodWaitSeconds,
+	getErrorText,
+	isFileReferenceExpired: isFileRefExpired,
+} = require("../utils/flood_utils");
 
 const MAX_RPC_RETRIES = 5;
 
@@ -39,7 +43,9 @@ class FloodControl {
 	 */
 	_parseFloodWaitSeconds(err) {
 		const seconds = parseFloodWaitSeconds(err);
-		logMessage.flood(seconds !== null ? `[FLOOD] Flood wait: ${seconds}s` : `[FLOOD] No flood wait: ${getErrorText(err)}`);
+		logMessage.flood(
+			seconds !== null ? `[FLOOD] Flood wait: ${seconds}s` : `[FLOOD] No flood wait: ${getErrorText(err)}`,
+		);
 		return seconds;
 	}
 

@@ -220,9 +220,8 @@ const getExpectedMediaSize = (message) => {
 
 // Генерация имени файла на основе сообщения (используется в checkFileExist и getMediaPath)
 const sanitizeFileName = (name) => {
-	return name
-		.replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_")
-		.replace(/\s+$/, "");
+	const invalidFileNameChars = new RegExp("[" + '\\x00-\\x1f\\x7f<>:"/\\\\|?*' + "]", "g");
+	return name.replace(invalidFileNameChars, "_").replace(/\s+$/, "");
 };
 
 const buildFileName = (message) => {

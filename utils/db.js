@@ -597,7 +597,33 @@ function* getMessagesForExport(channelId, outputFolder, type = "all") {
 	logMessage().db(`[DB] getMessagesForExport: yielded ${count} rows`);
 }
 
-const exportToJsonFiles = (channelId, outputFolder) => {
+const waitForStreamDrain = (stream) =>
+	new Promise((resolve, reject) => {
+		stream.once("drain", resolve);
+		stream.once("error", reject);
+	});
+
+const waitForStreamFinish = (stream) =>
+	new Promise((resolve, reject) => {
+		const onFinish = () => {
+			stream.off("error", onError);
+			resolve();
+		};
+		const onError = (err) => {
+			stream.off("finish", onFinish);
+			reject(err);
+		};
+		stream.once("finish", onFinish);
+		stream.once("error", onError);
+		// If stream is already destroyed, resolve immediately
+		if (stream.destroyed) {
+			stream.off("finish", onFinish);
+			stream.off("error", onError);
+			resolve();
+		}
+	});
+
+const exportToJsonFiles = async (channelId, outputFolder) => {
 	const rawFilePath = getRawMessagesPath(outputFolder);
 	const processedFilePath = getProcessedMessagesPath(outputFolder);
 
@@ -626,15 +652,20 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 	for (const row of getMessagesForExport(channelId, outputFolder, "all")) {
 		if (streamError) break;
 		if (row.raw_json) {
-			rawStream.write(row.raw_json + "\n");
+			if (!rawStream.write(row.raw_json + "\n")) {
+				await waitForStreamDrain(rawStream);
+			}
 		}
 		if (row.processed_json) {
-			processedStream.write(row.processed_json + "\n");
+			if (!processedStream.write(row.processed_json + "\n")) {
+				await waitForStreamDrain(processedStream);
+			}
 		}
 		count++;
 	}
 	rawStream.end();
 	processedStream.end();
+	await Promise.all([waitForStreamFinish(rawStream), waitForStreamFinish(processedStream)]);
 	if (streamError) {
 		throw streamError;
 	}

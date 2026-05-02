@@ -72,7 +72,7 @@ class DownloadManager {
 	}
 
 	removeFileIfExists(filePath, contextLabel = "file") {
-		if (!filePath || !fs.existsSync(filePath)) {
+		if (!filePath) {
 			return;
 		}
 
@@ -80,7 +80,9 @@ class DownloadManager {
 			fs.unlinkSync(filePath);
 			logMessage.dl(`[DL] Removed ${contextLabel}: ${filePath}`);
 		} catch (error) {
-			logMessage.error(`[DL] Failed to remove ${contextLabel} ${filePath}: ${error.message}`);
+			if (error.code !== "ENOENT") {
+				logMessage.error(`[DL] Failed to remove ${contextLabel} ${filePath}: ${error.message}`);
+			}
 		}
 	}
 
@@ -89,11 +91,19 @@ class DownloadManager {
 
 		this.removeFileIfExists(downloadTargetPath, "stale partial");
 
+		if (this._cancelled) {
+			logMessage.dl(`[DL] Download cancelled before start: msgId=${msgId}`);
+			return fileSize;
+		}
+
 		logMessage.dl(`[DL] Starting Telegram download: msgId=${msgId}`);
 		await floodState.runWithFloodControl(`downloadMedia-msg${msgId}`, async () => {
 			return this.client.downloadMedia(message, {
 				outputFile: downloadTargetPath,
 				progressCallback: (downloaded, total) => {
+					if (this._cancelled) {
+						throw new Error("Download cancelled by user");
+					}
 					fileSize = downloaded;
 					const name = path.basename(finalValidationPath);
 					if (total === downloaded) {
@@ -137,6 +147,11 @@ class DownloadManager {
 
 		logMessage.dl(`[DL] downloadMedia: msgId=${msgId}, type=${mediaType}, path=${mediaPath}`);
 
+		if (this._cancelled) {
+			logMessage.dl(`[DL] downloadMedia aborted (cancelled): msgId=${msgId}`);
+			return { success: false, fileSize: 0, validationError: "cancelled" };
+		}
+
 		try {
 			if (!message.media) {
 				logMessage.dl(`[DL] No media in message: msgId=${msgId}`);
@@ -151,7 +166,11 @@ class DownloadManager {
 					logMessage.dl(`[DL] Saving webpage URL: ${url}`);
 					fs.writeFileSync(urlPath, url);
 				}
-				mediaPath = path.join(mediaPath, `../${message?.media?.webpage?.id}_image.jpeg`);
+				this.activePartialPaths.delete(downloadTargetPath);
+				if (channelId && outputFolder) {
+					db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+				}
+				return { success: true, fileSize: 0 };
 			}
 
 			finalValidationPath = mediaPath;
@@ -176,6 +195,11 @@ class DownloadManager {
 				const { circularStringify } = require("../utils/helper");
 				logMessage.dl(`[DL] Saving poll data for msgId=${msgId}`);
 				fs.writeFileSync(pollPath, circularStringify(message.media.poll, null, 2));
+				this.activePartialPaths.delete(downloadTargetPath);
+				if (channelId && outputFolder) {
+					db.setFileDownloaded(channelId, outputFolder, message.id, 1);
+				}
+				return { success: true, fileSize: 0 };
 			}
 
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -588,8 +612,9 @@ class DownloadManager {
 			);
 
 			// Process validation results
+			const errorByPath = new Map(validationResults.errors.map((e) => [e.path, e]));
 			for (const fileInfo of filesToValidate) {
-				const errorEntry = validationResults.errors.find((e) => e.path === fileInfo.mediaPath);
+				const errorEntry = errorByPath.get(fileInfo.mediaPath);
 				if (errorEntry) {
 					logMessage.warn(
 						`[VALID] File failed validation: ${path.basename(fileInfo.mediaPath)} - ${errorEntry.error}`,
@@ -736,6 +761,14 @@ class DownloadManager {
 						}
 					}
 				}
+			}
+		}
+
+		if (this.activeDownloads.size > 0) {
+			try {
+				await Promise.all([...this.activeDownloads]);
+			} catch (err) {
+				logMessage.error(`[DL] Batch download wait failed: ${err?.message || err}`);
 			}
 		}
 

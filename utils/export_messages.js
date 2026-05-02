@@ -34,7 +34,7 @@ const getChannelList = () => {
  * @param {string} channelId - ID канала
  * @returns {boolean} Успешно ли завершился экспорт
  */
-const exportChannel = (channelId) => {
+const exportChannel = async (channelId) => {
 	const exportDir = getExportDir();
 	const channelPath = path.join(exportDir, channelId);
 	const dbPath = path.join(channelPath, "messages.db");
@@ -48,7 +48,7 @@ const exportChannel = (channelId) => {
 	logMessage.info(`Exporting messages from channel '${channelId}'...`);
 
 	try {
-		const count = exportToJsonFiles(channelId, channelPath);
+		const count = await exportToJsonFiles(channelId, channelPath);
 		logMessage.success(`Successfully exported ${count} messages from '${channelId}' to JSON files.`);
 		return true;
 	} catch (e) {
@@ -78,7 +78,7 @@ const main = async () => {
 	let failCount = 0;
 
 	for (const channelId of channels) {
-		const success = exportChannel(channelId);
+		const success = await exportChannel(channelId);
 		if (success) {
 			successCount++;
 		} else {

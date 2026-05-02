@@ -21,13 +21,13 @@ module.exports = [
 				__filename: "readonly",
 			},
 		},
-			rules: {
-				"no-global-return": "off",
-				"no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
-				"no-constant-condition": ["error", { checkLoops: false }],
-				"prefer-const": "warn",
-				"no-var": "error",
-			},
-			ignores: ["node_modules/**", "export/**", "logs/**"],
+		rules: {
+			"no-global-return": "off",
+			"no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+			"no-constant-condition": ["error", { checkLoops: false }],
+			"prefer-const": "warn",
+			"no-var": "error",
+		},
+		ignores: ["node_modules/**", "export/**", "logs/**"],
 	},
 ];

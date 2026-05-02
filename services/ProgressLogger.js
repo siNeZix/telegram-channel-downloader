@@ -129,14 +129,6 @@ class ProgressLogger {
 		this.lastProgressLogAt = Date.now();
 	}
 
-	updateStats(stats = {}) {
-		if (typeof stats.totalFiles === "number") this.totalFiles = stats.totalFiles;
-		if (typeof stats.successful === "number") this.successfulDownloads = stats.successful;
-		if (typeof stats.failed === "number") this.failedDownloads = stats.failed;
-		if (typeof stats.active === "number") this.activeDownloads = stats.active;
-		if (typeof stats.bytesDownloaded === "number") this.totalBytesDownloaded = stats.bytesDownloaded;
-	}
-
 	reset() {
 		this.downloadStartedAt = Date.now();
 		this.lastProgressLogAt = 0;

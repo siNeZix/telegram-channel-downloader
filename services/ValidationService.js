@@ -301,7 +301,7 @@ class ValidationService {
 			reason,
 			originalPath: filePath,
 			quarantinedAt: new Date().toISOString(),
-			...metadata,
+			metadata,
 		};
 
 		let lastError = null;

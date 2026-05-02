@@ -397,9 +397,9 @@ async function runValidation(options = {}) {
 										timestamp: new Date().toISOString(),
 									});
 									log.deleted(`${file.relativePath} (not in DB, invalid)`);
-							} else if (quarantined) {
-								totalErrors++;
-								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
+								} else if (quarantined) {
+									totalErrors++;
+									log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
 								}
 							}
 						}
@@ -446,6 +446,116 @@ async function runValidation(options = {}) {
 			errors: totalErrors,
 		};
 	}
+
+	const validationStart = Date.now();
+	let processedCount = 0;
+	let activeIndex = 0;
+	const workers = [];
+	const workerCount = Math.min(MAX_PARALLEL, files.length);
+
+	const worker = async () => {
+		while (activeIndex < files.length) {
+			const currentIndex = activeIndex++;
+			const file = files[currentIndex];
+			processedCount++;
+
+			if (!ignoreSnapshots) {
+				const channelId = extractChannelIdFromPath(file.path, exportPath);
+				if (channelId) {
+					const channelPath = path.join(exportPath, channelId);
+					const snapshots = snapshotsByChannel.get(channelPath);
+					const relativeToChannel = path.relative(channelPath, file.path);
+					if (snapshots?.has(relativeToChannel) || snapshots?.has(relativeToChannel.replace(/\\/g, "/"))) {
+						totalSkipped++;
+						if (verbose) {
+							log.info(`Skipped snapshot: ${file.relativePath}`);
+						}
+						continue;
+					}
+				}
+			}
+
+			try {
+				const channelId = extractChannelIdFromPath(file.path, exportPath);
+				const messageId = extractMessageIdFromPath(file.path);
+				const outputFolder = channelId ? path.join(exportPath, channelId) : null;
+				const expectedSize =
+					channelId && messageId ? db.getExpectedSize(channelId, outputFolder, messageId) : null;
+				const result = await validationService.validateMediaFile(file.path, file.type, {
+					deepValidation: deep,
+					expectedSize,
+				});
+
+				if (result.valid) {
+					totalValid++;
+					if (channelId && messageId && outputFolder) {
+						db.setValidationState(channelId, outputFolder, messageId, {
+							status: "verified",
+							profile: result.profile,
+							error: null,
+						});
+					}
+					if (verbose) {
+						log.success(`Valid: ${file.relativePath}`);
+					}
+				} else {
+					totalInvalid++;
+					if (dryRun) {
+						log.dryrun(`Would quarantine: ${file.relativePath} - ${result.error}`);
+					} else {
+						const quarantineChannelId = channelId || "unknown";
+						const quarantineOutputFolder = outputFolder || path.dirname(file.path);
+						const quarantined = await quarantineFile(
+							quarantineChannelId,
+							quarantineOutputFolder,
+							file.path,
+							result.error || "validation failed",
+							{
+								relativePath: file.relativePath,
+								size: file.size,
+							},
+						);
+						if (quarantined?.ok) {
+							totalDeleted++;
+							deletedEntries.push({
+								path: file.relativePath,
+								size: file.size,
+								reason: result.error || "validation failed",
+								timestamp: new Date().toISOString(),
+							});
+							log.deleted(`${file.relativePath} (${result.error || "validation failed"})`);
+						} else if (quarantined) {
+							totalErrors++;
+							log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
+						}
+					}
+					if (channelId && messageId && outputFolder) {
+						db.setFileDownloaded(channelId, outputFolder, messageId, 0);
+						db.setValidationState(channelId, outputFolder, messageId, {
+							status: dryRun ? "failed" : "quarantined",
+							profile: result.profile,
+							error: result.error,
+						});
+					}
+				}
+			} catch (error) {
+				totalErrors++;
+				log.error(`Validation error: ${file.relativePath} - ${error.message}`);
+			}
+
+			if (verbose || processedCount % 100 === 0 || processedCount === files.length) {
+				printProgress(processedCount, files.length);
+			}
+		}
+	};
+
+	for (let i = 0; i < workerCount; i++) {
+		workers.push(worker());
+	}
+	await Promise.all(workers);
+	process.stdout.write("\r" + " ".repeat(80) + "\r");
+	logMessage.valid(`[VALID] File validation processed ${processedCount} files in ${Date.now() - validationStart}ms`);
+
 	const summaryLines = [
 		`\n${"=".repeat(50)}`,
 		`=== Validation Complete ===`,
@@ -552,7 +662,7 @@ if (require.main === module) {
 		.then((result) => {
 			const logger = require("../utils/logger");
 			logger.close();
-			const exitCode = result && result.totalInvalid > 0 && !options.dryRun ? 0 : 0;
+			const exitCode = result && result.totalInvalid > 0 && !options.dryRun ? 1 : 0;
 			if (exitCode !== 0) {
 				process.exitCode = exitCode;
 			}

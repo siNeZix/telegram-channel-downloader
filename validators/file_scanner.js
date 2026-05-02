@@ -5,7 +5,9 @@ const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "t
 
 const VIDEO_EXTENSIONS = new Set(["mp4", "avi", "mkv", "mov", "webm", "flv", "wmv", "m4v", "mpg", "mpeg", "3gp"]);
 
-const SUPPORTED_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+const AUDIO_EXTENSIONS = new Set(["mp3", "ogg", "flac", "wav", "aac", "m4a", "opus", "wma"]);
+
+const SUPPORTED_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS]);
 
 const IGNORED_DIRS = new Set(["node_modules", ".git", "snapshots", "quarantine"]);
 const IGNORED_EXTENSIONS = new Set(["json", "txt", "html", "css", "js"]);
