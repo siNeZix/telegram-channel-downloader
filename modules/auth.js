@@ -14,24 +14,7 @@ const OTP_METHOD = {
 };
 const MAX_AUTH_RETRIES = 3;
 
-const getErrorText = (err) => (err?.errorMessage || err?.message || String(err) || "").toUpperCase();
-
-const parseFloodWaitSeconds = (err) => {
-	const directSeconds = Number(err?.seconds);
-	if (Number.isFinite(directSeconds) && directSeconds > 0) {
-		return directSeconds;
-	}
-	const text = getErrorText(err);
-	const floodMatch = text.match(/FLOOD_WAIT_?(\d+)/);
-	if (floodMatch?.[1]) {
-		return Number(floodMatch[1]);
-	}
-	const waitMatch = text.match(/A WAIT OF (\d+) SECONDS/);
-	if (waitMatch?.[1]) {
-		return Number(waitMatch[1]);
-	}
-	return null;
-};
+const { getErrorText, parseFloodWaitSeconds } = require("../utils/flood_utils");
 
 const initAuth = async (otpPreference = OTP_METHOD.APP) => {
 	const credentials = getCredentials();

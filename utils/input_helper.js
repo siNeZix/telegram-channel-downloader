@@ -48,7 +48,7 @@ const optInput = async () => {
 		},
 	};
 
-	const { otp } = await inquirer.prompt(question);
+	const { otp } = await promptSafe(question);
 	return otp;
 };
 
@@ -58,7 +58,7 @@ const textInput = async (message = "Please Enter") => {
 		name: "text",
 		message: message,
 	};
-	const { text } = await inquirer.prompt(question);
+	const { text } = await promptSafe(question);
 	return text;
 };
 
@@ -80,7 +80,7 @@ const numberInput = async (message = "Please enter a number", min = -Infinity, m
 		},
 	};
 
-	const { number } = await inquirer.prompt(question);
+	const { number } = await promptSafe(question);
 	return parseFloat(number);
 };
 
@@ -92,7 +92,7 @@ const booleanInput = async (message = "Please answer with yes or no", defaultVal
 		default: defaultValue,
 	};
 
-	const { confirm } = await inquirer.prompt(question);
+	const { confirm } = await promptSafe(question);
 	return confirm;
 };
 
@@ -104,7 +104,7 @@ const selectInput = async (message = "Please select", optionsArr = []) => {
 		choices: optionsArr,
 	};
 
-	const { input } = await inquirer.prompt(question);
+	const { input } = await promptSafe(question);
 	return input;
 };
 
@@ -116,12 +116,12 @@ const multipleChoice = async (message = "Please select multiple choices", option
 		default: defaultOptions,
 		choices: optionsArr,
 	};
-	const { input } = await inquirer.prompt(question);
+	const { input } = await promptSafe(question);
 	return input;
 };
 
 const downloadOptionInput = async () => {
-	let fileTypeArray = [MEDIA_TYPES.IMAGE, MEDIA_TYPES.VIDEO, MEDIA_TYPES.AUDIO, "pdf", "zip", "custom", "All"];
+	let fileTypeArray = [MEDIA_TYPES.IMAGE, MEDIA_TYPES.VIDEO, MEDIA_TYPES.AUDIO, "pdf", "zip", "custom", "all"];
 
 	const defaultSelected = [MEDIA_TYPES.IMAGE, MEDIA_TYPES.VIDEO, MEDIA_TYPES.AUDIO, "pdf"];
 	let fileExtensions = await multipleChoice("Choose file to download", fileTypeArray, defaultSelected);
@@ -142,7 +142,7 @@ const downloadOptionInput = async () => {
 		[MEDIA_TYPES.VENUE]: true,
 		[MEDIA_TYPES.STICKER]: true,
 	};
-	fileExtensions?.map((e) => {
+	fileExtensions?.forEach((e) => {
 		filesToDownload[e] = true;
 	});
 

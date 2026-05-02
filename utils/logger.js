@@ -7,7 +7,10 @@ let normalStream = null;
 let initialized = false;
 let consolePatched = false;
 let flushInterval = null;
+let writePending = [];
+let drainInProgress = false;
 const FLUSH_INTERVAL_MS = 5000;
+const MAX_PENDING_WRITES = 5000;
 
 const originalConsole = {
 	log: console.log.bind(console),
@@ -19,15 +22,21 @@ const originalConsole = {
 
 const ANSI_REGEX = new RegExp(String.fromCharCode(0x1b) + "\\[[0-9;]*m", "g");
 const MAX_ARCHIVE_FILES = 50;
-const DEBUG_LOG_NAME = "debug.log";
-const CURRENT_LOG_NAME = "current.log";
-const DEBUG_ARCHIVE_PREFIX = "debug-";
-const ARCHIVE_LOG_REGEX = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
-const DEBUG_ARCHIVE_LOG_REGEX = /^debug-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$/;
-const MAX_DEBUG_LOG_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_MESSAGE_SIZE_BYTES = 100 * 1024;
+const MAX_DEBUG_LOG_SIZE_BYTES = 1 * 1024 * 1024;
+const MAX_DEBUG_ARCHIVES_TOTAL_SIZE = 5 * 1024 * 1024;
+const MAX_MESSAGE_SIZE_BYTES = 50 * 1024;
 
 let lastLogTimestamp = null;
 let initInProgress = false;
+let lastRotationCheckSize = 0;
+
+const DEBUG_RATE_LIMIT_PER_SECOND = 3;
+const DEBUG_CIRCUIT_BREAKER_MS = 10000;
+let debugRateWindowStart = 0;
+let debugRateWindowCount = 0;
+let debugSuppressedCount = 0;
+let debugCircuitBreakerUntil = 0;
 
 function formatConsoleTimestamp(date) {
 	const h = String(date.getHours()).padStart(2, "0");
@@ -73,6 +82,45 @@ function installConsoleTimestamps() {
 
 function stripAnsi(str) {
 	return str.replace(ANSI_REGEX, "");
+}
+
+function truncateMessageIfTooLarge(message) {
+	if (!message) return message;
+	const bytes = Buffer.byteLength(message, "utf8");
+	if (bytes <= MAX_MESSAGE_SIZE_BYTES) return message;
+	const suffix = "\n...truncated (message too large to log)\n";
+	const suffixBytes = Buffer.byteLength(suffix, "utf8");
+	let truncated = message.slice(0, MAX_MESSAGE_SIZE_BYTES - suffixBytes);
+	// trim to valid UTF-8 boundary
+	while (Buffer.byteLength(truncated, "utf8") > MAX_MESSAGE_SIZE_BYTES - suffixBytes) {
+		truncated = truncated.slice(0, -1);
+	}
+	return truncated + suffix;
+}
+
+function shouldDropDebug() {
+	const now = Date.now();
+	if (now - debugRateWindowStart > 1000) {
+		if (debugSuppressedCount > 0) {
+			try {
+				const note = `[DEBUG] ${debugSuppressedCount} debug message(s) suppressed by rate limit\n`;
+				if (debugStream) {
+					debugStream.write(note);
+				}
+			} catch (e) {
+				// ignore
+			}
+		}
+		debugRateWindowStart = now;
+		debugRateWindowCount = 0;
+		debugSuppressedCount = 0;
+	}
+	if (debugRateWindowCount >= DEBUG_RATE_LIMIT_PER_SECOND) {
+		debugSuppressedCount++;
+		return true;
+	}
+	debugRateWindowCount++;
+	return false;
 }
 
 function formatDateForFilename(date) {
@@ -139,31 +187,116 @@ function rotateDebugLogIfNeeded(logsDir, debugLogPath) {
 	}
 }
 
-function cleanupOldDebugArchives() {
-	const logsDir = pathsManager.logs;
+function rotateDebugLogIfNeededSync(logsDir, debugLogPath) {
+	if (!fs.existsSync(debugLogPath)) return;
+	try {
+		const stats = fs.statSync(debugLogPath);
+		if (stats.size < MAX_DEBUG_LOG_SIZE_BYTES) {
+			return;
+		}
+		const archiveName = `${DEBUG_ARCHIVE_PREFIX}${formatDateForFilename(new Date())}.log`;
+		const archivePath = path.join(logsDir, archiveName);
+		fs.renameSync(debugLogPath, archivePath);
+		cleanupOldDebugArchivesBySize();
+	} catch (err) {
+		reportLoggerFailure(err, "Failed to rotate debug.log in sync mode");
+	}
+}
 
+function reopenDebugStream() {
+	const logsDir = pathsManager.logs;
+	const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
+
+	rotateDebugLogIfNeeded(logsDir, debugLogPath);
+	cleanupOldDebugArchives();
+
+	if (!fs.existsSync(debugLogPath)) {
+		try {
+			fs.writeFileSync(debugLogPath, "");
+		} catch (err) {
+			reportLoggerFailure(err, "Failed to recreate debug.log after rotation");
+			return;
+		}
+	}
+
+	try {
+		const oldStream = debugStream;
+		const newStream = fs.createWriteStream(debugLogPath, { flags: "a", encoding: "utf8" });
+
+		newStream.on("error", (err) => {
+			reportLoggerFailure(err, "debug stream error");
+			if (debugStream === newStream) {
+				debugStream = null;
+				initialized = false;
+			}
+		});
+		newStream.on("drain", () => drainPendingWrites());
+
+		if (oldStream) {
+			writePending = writePending.filter((w) => w.stream !== oldStream);
+			try {
+				oldStream.end();
+			} catch (e) {
+				reportLoggerFailure(e, "Failed to end old debug stream during rotation");
+			}
+		}
+
+		debugStream = newStream;
+		lastRotationCheckSize = 0;
+	} catch (err) {
+		reportLoggerFailure(err, "Failed to reopen debug stream after rotation");
+	}
+}
+
+function maybeRotateDebugStream(fileLine) {
+	const lineBytes = Buffer.byteLength(fileLine, "utf8");
+	debugBytesWritten += lineBytes;
+
+	if (debugBytesWritten >= MAX_DEBUG_LOG_SIZE_BYTES - MAX_MESSAGE_SIZE_BYTES) {
+		const logsDir = pathsManager.logs;
+		const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
+		if (fs.existsSync(debugLogPath)) {
+			try {
+				const stats = fs.statSync(debugLogPath);
+				if (stats.size + lineBytes >= MAX_DEBUG_LOG_SIZE_BYTES) {
+					reopenDebugStream();
+					debugBytesWritten = lineBytes;
+				}
+			} catch (err) {
+				reportLoggerFailure(err, "Failed to check debug log size for rotation");
+			}
+		}
+	}
+}
+
+function cleanupOldDebugArchivesBySize() {
+	const logsDir = pathsManager.logs;
 	if (!fs.existsSync(logsDir)) return;
 
 	try {
-		const files = fs
+		let files = fs
 			.readdirSync(logsDir)
 			.filter((f) => DEBUG_ARCHIVE_LOG_REGEX.test(f))
 			.map((f) => {
 				const filePath = path.join(logsDir, f);
 				const stats = fs.statSync(filePath);
-				return { name: f, mtime: stats.mtime };
+				return { name: f, mtime: stats.mtime, size: stats.size };
 			})
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
-		if (files.length > MAX_ARCHIVE_FILES) {
-			const toDelete = files.slice(MAX_ARCHIVE_FILES);
-			for (const file of toDelete) {
-				fs.unlinkSync(path.join(logsDir, file.name));
-			}
+		let totalSize = files.reduce((sum, f) => sum + f.size, 0);
+		while (totalSize > MAX_DEBUG_ARCHIVES_TOTAL_SIZE && files.length > 0) {
+			const oldest = files.pop();
+			fs.unlinkSync(path.join(logsDir, oldest.name));
+			totalSize -= oldest.size;
 		}
 	} catch (err) {
-		reportLoggerFailure(err, "Failed to clean old debug log archives");
+		reportLoggerFailure(err, "Failed to clean old debug log archives by size");
 	}
+}
+
+function cleanupOldDebugArchives() {
+	cleanupOldDebugArchivesBySize();
 }
 
 function init() {
@@ -217,6 +350,7 @@ function init() {
 				initialized = false;
 			}
 		});
+		ds.on("drain", () => drainPendingWrites());
 		ns.on("error", (err) => {
 			reportLoggerFailure(err, "current stream error");
 			if (normalStream === ns) {
@@ -224,11 +358,13 @@ function init() {
 				initialized = false;
 			}
 		});
+		ns.on("drain", () => drainPendingWrites());
 
 		if (flushInterval) clearInterval(flushInterval);
 		flushInterval = setInterval(flush, FLUSH_INTERVAL_MS);
 		flushInterval.unref();
 
+		debugBytesWritten = 0;
 		initialized = true;
 	} catch (err) {
 		reportLoggerFailure(err, "Failed to initialize logger");
@@ -238,6 +374,24 @@ function init() {
 	} finally {
 		initInProgress = false;
 	}
+}
+
+function drainPendingWrites() {
+	if (drainInProgress) return;
+	drainInProgress = true;
+
+	const drained = [];
+	for (const { stream, data } of writePending) {
+		const canContinue = stream.write(data);
+		if (canContinue) {
+			drained.push({ stream, data });
+		} else {
+			break;
+		}
+	}
+	writePending = writePending.filter((w) => !drained.includes(w));
+
+	drainInProgress = false;
 }
 
 function write(level, message) {
@@ -254,7 +408,7 @@ function write(level, message) {
 		return;
 	}
 
-	const cleanMessage = stripAnsi(message);
+	const cleanMessage = stripAnsi(truncateMessageIfTooLarge(message));
 	const now = new Date();
 	const timestamp = now.toISOString();
 
@@ -271,8 +425,21 @@ function write(level, message) {
 
 	const fileLine = `[${timestamp}] [${level.toUpperCase()}]${deltaStr} ${cleanMessage}\n`;
 
+	if (level === "debug" && shouldDropDebug()) {
+		return;
+	}
+
+	maybeRotateDebugStream(fileLine);
+
+	const writeToStream = (stream, data) => {
+		const ok = stream.write(data);
+		if (!ok && writePending.length < MAX_PENDING_WRITES) {
+			writePending.push({ stream, data });
+		}
+	};
+
 	try {
-		debugStream.write(fileLine);
+		writeToStream(debugStream, fileLine);
 	} catch (e) {
 		reportLoggerFailure(e, "Failed writing to debug log");
 	}
@@ -280,7 +447,7 @@ function write(level, message) {
 	const normalLevels = ["info", "success", "warn", "error"];
 	if (normalLevels.includes(level)) {
 		try {
-			normalStream.write(fileLine);
+			writeToStream(normalStream, fileLine);
 		} catch (e) {
 			reportLoggerFailure(e, "Failed writing to current log");
 		}
@@ -291,7 +458,7 @@ function writeSync(level, message) {
 	const logsDir = pathsManager.logs;
 	const debugLogPath = path.join(logsDir, DEBUG_LOG_NAME);
 	const currentLogPath = path.join(logsDir, CURRENT_LOG_NAME);
-	const cleanMessage = stripAnsi(message);
+	const cleanMessage = stripAnsi(truncateMessageIfTooLarge(message));
 	const now = new Date();
 	const timestamp = now.toISOString();
 
@@ -315,6 +482,8 @@ function writeSync(level, message) {
 	} catch (e) {
 		reportLoggerFailure(e, "Failed to create logs directory for sync write");
 	}
+
+	rotateDebugLogIfNeededSync(logsDir, debugLogPath);
 
 	try {
 		fs.appendFileSync(debugLogPath, fileLine);

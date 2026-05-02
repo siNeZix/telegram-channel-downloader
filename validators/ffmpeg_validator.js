@@ -117,6 +117,11 @@ const log = {
 	error: (msg) => logger.writeSync("error", `[VALID ERROR] ${msg}`),
 };
 
+/**
+ * @deprecated Use spawn-based approach (execPromise with array arguments) instead.
+ * This function does NOT sanitize embedded quotes and is unsafe for shell execution.
+ * Kept only for backward compatibility with external consumers.
+ */
 function escapePathForCmd(filePath) {
 	let escaped = filePath.replace(/'/g, "''");
 	return `"${escaped}"`;

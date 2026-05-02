@@ -1,6 +1,28 @@
 const fs = require("fs");
 const path = require("path");
 
+const MIN_FREE_BYTES_FOR_DOWNLOAD = 500 * 1024 * 1024; // 500 MB
+
+const checkDiskSpace = (targetPath) => {
+	try {
+		const resolved = path.resolve(targetPath);
+		let stats;
+		if (fs.statfsSync) {
+			stats = fs.statfsSync(resolved);
+			return stats.bavail * stats.bsize;
+		}
+		// fallback: проверка только для Windows через wmic не делаем, используем try-catch при записи
+		return Infinity;
+	} catch (e) {
+		return Infinity;
+	}
+};
+
+const hasEnoughDiskSpace = (targetPath, requiredBytes = MIN_FREE_BYTES_FOR_DOWNLOAD) => {
+	const free = checkDiskSpace(targetPath);
+	return free >= requiredBytes;
+};
+
 const ENV_KEYS = {
 	root: "TGDL_RUNTIME_ROOT",
 	export: "TGDL_EXPORT_DIR",
@@ -114,3 +136,6 @@ class PathsManager {
 }
 
 module.exports = new PathsManager();
+module.exports.checkDiskSpace = checkDiskSpace;
+module.exports.hasEnoughDiskSpace = hasEnoughDiskSpace;
+module.exports.MIN_FREE_BYTES_FOR_DOWNLOAD = MIN_FREE_BYTES_FOR_DOWNLOAD;

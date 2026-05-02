@@ -1,13 +1,9 @@
 const { wait } = require("../utils/helper");
 const { logMessage } = require("../utils/helper");
 const config = require("../utils/config");
+const { parseFloodWaitSeconds, getErrorText, isFileReferenceExpired: isFileRefExpired } = require("../utils/flood_utils");
 
 const MAX_RPC_RETRIES = 5;
-
-function isFileReferenceExpired(err) {
-	const text = (err?.errorMessage || err?.message || String(err) || "").toUpperCase();
-	return text.includes("FILE_REFERENCE") && text.includes("EXPIRED");
-}
 
 /**
  * Сервис для управления Flood Wait ограничениями Telegram API
@@ -39,40 +35,12 @@ class FloodControl {
 	}
 
 	/**
-	 * Получить текст ошибки
-	 * @param {Error} err
-	 * @returns {string}
+	 * Парсить секунды ожидания из ошибки Flood Wait с логированием
 	 */
-	getErrorText(err) {
-		return (err?.errorMessage || err?.message || String(err) || "").toUpperCase();
-	}
-
-	/**
-	 * Парсить секунды ожидания из ошибки Flood Wait
-	 * @param {Error} err
-	 * @returns {number|null}
-	 */
-	parseFloodWaitSeconds(err) {
-		const directSeconds = Number(err?.seconds);
-		if (Number.isFinite(directSeconds) && directSeconds > 0) {
-			logMessage.flood(`[FLOOD] Parsed flood wait from .seconds: ${directSeconds}s`);
-			return directSeconds;
-		}
-		const text = this.getErrorText(err);
-		const floodMatch = text.match(/FLOOD_WAIT_?(\d+)/);
-		if (floodMatch?.[1]) {
-			const parsed = Number(floodMatch[1]);
-			logMessage.flood(`[FLOOD] Parsed flood wait from text: ${parsed}s`);
-			return parsed;
-		}
-		const waitMatch = text.match(/A WAIT OF (\d+) SECONDS/);
-		if (waitMatch?.[1]) {
-			const parsed = Number(waitMatch[1]);
-			logMessage.flood(`[FLOOD] Parsed flood wait from 'A WAIT OF' match: ${parsed}s`);
-			return parsed;
-		}
-		logMessage.flood(`[FLOOD] No flood wait detected in error: ${text}`);
-		return null;
+	_parseFloodWaitSeconds(err) {
+		const seconds = parseFloodWaitSeconds(err);
+		logMessage.flood(seconds !== null ? `[FLOOD] Flood wait: ${seconds}s` : `[FLOOD] No flood wait: ${getErrorText(err)}`);
+		return seconds;
 	}
 
 	/**
@@ -137,7 +105,7 @@ class FloodControl {
 
 				return result;
 			} catch (err) {
-				const floodSeconds = this.parseFloodWaitSeconds(err);
+				const floodSeconds = this._parseFloodWaitSeconds(err);
 
 				logMessage.flood(
 					`[FLOOD] ${label} failed: ${err?.message || err?.errorMessage || String(err)}, floodSeconds=${floodSeconds}`,
@@ -161,7 +129,7 @@ class FloodControl {
 					// Не ждём здесь - maybeWaitCooldown в следующей итерации сам подождёт
 					continue;
 				}
-				if (isFileReferenceExpired(err)) {
+				if (isFileRefExpired(err)) {
 					logMessage.warn(`[FLOOD] FILE_REFERENCE_EXPIRED in ${label}: ${err?.message || err}`);
 					err._isFileReferenceExpired = true;
 				}
@@ -231,5 +199,5 @@ const createFloodState = () => {
 module.exports = {
 	FloodControl,
 	createFloodState,
-	isFileReferenceExpired,
+	isFileReferenceExpired: isFileRefExpired,
 };

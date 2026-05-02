@@ -19,6 +19,7 @@ const { createFloodState, isFileReferenceExpired: isFileRefExpired } = require("
 const { ProgressLogger } = require("./ProgressLogger");
 const { TelegramEntityResolver } = require("./TelegramEntityResolver");
 const { ValidationService } = require("./ValidationService");
+const { hasEnoughDiskSpace } = require("../utils/paths");
 
 const DEFAULT_DOWNLOAD_RETRY_ATTEMPTS = 3;
 const DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS = 2;
@@ -157,6 +158,14 @@ class DownloadManager {
 			partialPath = validationService.getPartialPath(finalValidationPath);
 			downloadTargetPath = partialPath;
 			paths.ensureDir(path.dirname(downloadTargetPath));
+
+			if (!hasEnoughDiskSpace(path.dirname(downloadTargetPath))) {
+				logMessage.error(
+					`[DL] ENOSPC guard: not enough free space to download msgId=${msgId} to ${path.dirname(downloadTargetPath)}`,
+				);
+				return { success: false, fileSize: 0, validationError: "ENOSPC: insufficient disk space" };
+			}
+
 			this.removeFileIfExists(downloadTargetPath, "stale partial");
 			this.removeFileIfExists(finalValidationPath, "stale target");
 			this.activePartialPaths.add(downloadTargetPath);
@@ -242,8 +251,8 @@ class DownloadManager {
 
 			return { success: true, fileSize, validationProfile: validationResult.profile };
 		} catch (err) {
-			const isFileRefExpired = err?._isFileReferenceExpired || isFileRefExpired(err);
-			if (isFileRefExpired && channelId && this.entityResolver) {
+			const fileRefExpiredFlag = err?._isFileReferenceExpired || isFileRefExpired(err);
+			if (fileRefExpiredFlag && channelId && this.entityResolver) {
 				logMessage.warn(`[DL] FILE_REFERENCE_EXPIRED for msgId=${msgId}, will re-fetch message and retry`);
 				let refreshedMessage = null;
 				for (let refetchAttempt = 1; refetchAttempt <= FILE_REF_EXPIRED_MAX_RETRIES; refetchAttempt++) {
@@ -327,9 +336,9 @@ class DownloadManager {
 									);
 								}
 							} catch (retryErr) {
-								const retryIsFileRefExpired =
+								const retryFileRefExpiredFlag =
 									retryErr?._isFileReferenceExpired || isFileRefExpired(retryErr);
-								if (retryIsFileRefExpired && refetchAttempt < FILE_REF_EXPIRED_MAX_RETRIES) {
+								if (retryFileRefExpiredFlag && refetchAttempt < FILE_REF_EXPIRED_MAX_RETRIES) {
 									logMessage.warn(
 										`[DL] FILE_REFERENCE_EXPIRED again for msgId=${msgId} after refetch attempt ${refetchAttempt}`,
 									);

@@ -36,6 +36,11 @@ const DEFAULTS = {
 	},
 	logging: {
 		progressLogIntervalSeconds: 5,
+		debugLogMaxSizeMB: 1,
+		debugLogMaxArchiveTotalMB: 5,
+		debugLogMaxMessageKB: 50,
+		debugLogRatePerSecond: 3,
+		debugLogCircuitBreakerSeconds: 10,
 	},
 };
 

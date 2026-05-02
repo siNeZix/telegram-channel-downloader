@@ -1,6 +1,10 @@
 const PROGRESS_LOG_INTERVAL_SECONDS = 5;
 const CHECK_PROGRESS_PERCENT_MILESTONES = [25, 50, 75, 100];
 
+/** @type {Map<string, string>} последний залогированный снапшот по ключу проверки */
+const _lastCheckLogSnapshot = new Map();
+const CHECK_LOG_DEDUP_WINDOW_MS = 2000;
+
 const formatEta = (totalSeconds) => {
 	if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
 		return "unknown";
@@ -34,14 +38,7 @@ class ProgressLogger {
 		this.channelId = options.channelId || null;
 		this.totalBytesDownloaded = 0;
 		this._lastMilestonePercent = 0;
-	}
-
-	updateStats(stats) {
-		if (stats.totalFiles !== undefined) this.totalFiles = stats.totalFiles;
-		if (stats.successful !== undefined) this.successfulDownloads = stats.successful;
-		if (stats.failed !== undefined) this.failedDownloads = stats.failed;
-		if (stats.active !== undefined) this.activeDownloads = stats.active;
-		if (stats.bytesDownloaded !== undefined) this.totalBytesDownloaded = stats.bytesDownloaded;
+		this._lastDownloadLogSnapshot = null;
 	}
 
 	logDownloadProgress() {
@@ -101,7 +98,17 @@ class ProgressLogger {
 		];
 		if (this.channelId) parts.push(`ch=${this.channelId}`);
 
-		logMessage.info(parts.join(" | "));
+		const line = parts.join(" | ");
+		if (
+			this._lastDownloadLogSnapshot &&
+			this._lastDownloadLogSnapshot.line === line &&
+			Date.now() - this._lastDownloadLogSnapshot.ts < 2000
+		) {
+			return;
+		}
+		this._lastDownloadLogSnapshot = { ts: Date.now(), line };
+
+		logMessage.info(line);
 	}
 
 	shouldLogProgress() {
@@ -110,8 +117,24 @@ class ProgressLogger {
 		return finished === this.totalFiles || now - this.lastProgressLogAt >= PROGRESS_LOG_INTERVAL_SECONDS * 1000;
 	}
 
+	updateStats(stats = {}) {
+		if (typeof stats.totalFiles === "number") this.totalFiles = stats.totalFiles;
+		if (typeof stats.successful === "number") this.successfulDownloads = stats.successful;
+		if (typeof stats.failed === "number") this.failedDownloads = stats.failed;
+		if (typeof stats.active === "number") this.activeDownloads = stats.active;
+		if (typeof stats.bytesDownloaded === "number") this.totalBytesDownloaded = stats.bytesDownloaded;
+	}
+
 	markLogged() {
 		this.lastProgressLogAt = Date.now();
+	}
+
+	updateStats(stats = {}) {
+		if (typeof stats.totalFiles === "number") this.totalFiles = stats.totalFiles;
+		if (typeof stats.successful === "number") this.successfulDownloads = stats.successful;
+		if (typeof stats.failed === "number") this.failedDownloads = stats.failed;
+		if (typeof stats.active === "number") this.activeDownloads = stats.active;
+		if (typeof stats.bytesDownloaded === "number") this.totalBytesDownloaded = stats.bytesDownloaded;
 	}
 
 	reset() {
@@ -138,7 +161,15 @@ class ProgressLogger {
 		];
 		if (channelId) parts.push(`ch=${channelId}`);
 
-		logMessage.info(parts.join(" | "));
+		const line = parts.join(" | ");
+		const dedupKey = `${channelId || "global"}::${total}::${skipped}::${newFiles}`;
+		const last = _lastCheckLogSnapshot.get(dedupKey);
+		if (last && Date.now() - last.ts < CHECK_LOG_DEDUP_WINDOW_MS && last.line === line) {
+			return; // дубликат внутри окна
+		}
+		_lastCheckLogSnapshot.set(dedupKey, { ts: Date.now(), line });
+
+		logMessage.info(line);
 	}
 
 	static shouldLogCheckProgress(checked, total, lastLogAt, intervalMs = 5000) {

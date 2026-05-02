@@ -219,6 +219,12 @@ const getExpectedMediaSize = (message) => {
 };
 
 // Генерация имени файла на основе сообщения (используется в checkFileExist и getMediaPath)
+const sanitizeFileName = (name) => {
+	return name
+		.replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_")
+		.replace(/\s+$/, "");
+};
+
 const buildFileName = (message) => {
 	let fileName = `file_${message.id}`;
 	if (message.media.document) {
@@ -226,7 +232,7 @@ const buildFileName = (message) => {
 		if (docAttributes) {
 			let fileNameObj = docAttributes.find((e) => e.className == "DocumentAttributeFilename");
 			if (fileNameObj) {
-				fileName = `file_${message.id}_${fileNameObj.fileName}`;
+				fileName = `file_${message.id}_${sanitizeFileName(fileNameObj.fileName)}`;
 			} else {
 				let ext = mimeDB[message.media.document.mimeType]?.extensions[0];
 				if (ext) {
@@ -468,6 +474,7 @@ module.exports = {
 	logMessage,
 	wait,
 	buildFileName,
+	sanitizeFileName,
 	filterString,
 	clearFileCheckCache,
 	addFileToCheckCache,

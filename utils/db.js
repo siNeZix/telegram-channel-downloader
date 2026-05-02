@@ -611,10 +611,20 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 	}
 
 	let count = 0;
+	let streamError = null;
 	const startTime = Date.now();
 	const rawStream = fs.createWriteStream(rawFilePath, { flags: "a", encoding: "utf8" });
 	const processedStream = fs.createWriteStream(processedFilePath, { flags: "a", encoding: "utf8" });
+	rawStream.on("error", (err) => {
+		streamError = err;
+		logMessage().error(`[DB] rawStream error: ${err.message}`);
+	});
+	processedStream.on("error", (err) => {
+		streamError = err;
+		logMessage().error(`[DB] processedStream error: ${err.message}`);
+	});
 	for (const row of getMessagesForExport(channelId, outputFolder, "all")) {
+		if (streamError) break;
 		if (row.raw_json) {
 			rawStream.write(row.raw_json + "\n");
 		}
@@ -625,6 +635,9 @@ const exportToJsonFiles = (channelId, outputFolder) => {
 	}
 	rawStream.end();
 	processedStream.end();
+	if (streamError) {
+		throw streamError;
+	}
 
 	const elapsed = Date.now() - startTime;
 	logMessage().db(`[DB] exportToJsonFiles: exported ${count} rows in ${elapsed}ms`);
