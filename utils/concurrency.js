@@ -52,9 +52,6 @@ async function runPool(items, worker, options = {}) {
 	const runWorker = async () => {
 		while (activeIndex < list.length) {
 			const currentIndex = activeIndex++;
-			if (currentIndex >= list.length) {
-				break;
-			}
 			const item = list[currentIndex];
 			try {
 				const value = await worker(item, currentIndex);

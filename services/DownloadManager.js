@@ -479,31 +479,33 @@ class DownloadManager {
 	/**
 	 * Удалить невалидный файл
 	 */
-	async deleteInvalidFile(mediaPath, channelId, outputFolder, ffmpegPaths) {
+	async deleteInvalidFile(mediaPath, channelId, outputFolder, ffmpegPaths, reason, metadata) {
 		try {
 			const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths });
 			if (fs.existsSync(mediaPath)) {
 				if (config.get("download.quarantineInvalidFiles", true)) {
 					const quarantineResult = await validationService.quarantineFile(
 						mediaPath,
-						"existing file validation failed",
+						reason || "validation failed",
 						{
 							channelId,
 							originalTargetPath: mediaPath,
+							...metadata,
 						},
 					);
 					if (!quarantineResult?.ok) {
-						return false;
+						return { ok: false, quarantined: false };
 					}
+					return { ok: true, quarantined: true };
 				} else {
 					fs.unlinkSync(mediaPath);
 				}
 			}
 			fileCheckCache.delete(mediaPath);
-			return true;
+			return { ok: true, quarantined: false };
 		} catch (e) {
 			logMessage.error(`[VALID] Failed to delete invalid file: ${e.message}`);
-			return false;
+			return { ok: false, quarantined: false };
 		}
 	}
 
@@ -515,16 +517,13 @@ class DownloadManager {
 			outputFolder,
 			channelId,
 			ffmpegPaths,
-			deepValidation,
-			validationProfile = null,
+			validationProfile = "none",
 			verifyHash = false,
 			floodState,
 			downloadableFiles,
 		} = context;
-		// Resolve the explicit profile once for the whole batch so download-time
-		// validation matches the standalone validator (strict no longer collapses
-		// into deep). Falls back to the deep/sampled defaults when not provided.
-		const resolvedProfile = validationProfile || (deepValidation ? "full" : null);
+		const deepValidation = validationProfile === "full" || validationProfile === "strict";
+		const resolvedProfile = validationProfile !== "none" ? validationProfile : (deepValidation ? "full" : null);
 
 		logMessage.dl(`[DL] processMessageBatch: channelId=${channelId}, messageCount=${messages.length}`);
 
@@ -669,7 +668,7 @@ class DownloadManager {
 				const fileInfo = entry.item;
 				const result = entry.ok
 					? entry.value
-					: { valid: null, status: "inconclusive", error: entry.error?.message };
+					: { valid: null, status: "inconclusive", error: entry.error.message };
 
 				const outcome = await applyValidationOutcome({
 					result,
@@ -678,10 +677,8 @@ class DownloadManager {
 					messageId: fileInfo.message.id,
 					filePath: fileInfo.mediaPath,
 					db,
-					quarantineFn: (filePath, reason) =>
-						this.deleteInvalidFile(filePath, channelId, outputFolder, ffmpegPaths).then(() => ({
-							ok: true,
-						})),
+					quarantineFn: (filePath, reason, metadata) =>
+						this.deleteInvalidFile(filePath, channelId, outputFolder, ffmpegPaths, reason, metadata),
 					metadata: { reason: result.error || "validation failed" },
 				});
 

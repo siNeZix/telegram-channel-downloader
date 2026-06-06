@@ -56,8 +56,9 @@ const COMMANDS = {
 		spec: {
 			values: [CHANNEL_VALUE],
 			defaults: { channel: null },
-			positionalName: "channel", // legacy: `rebuild-db <id>`
+			positionalName: "channel",
 		},
+		positionalChannel: true,
 	},
 	listen: {
 		summary: "Listen for new messages in real time",
@@ -145,7 +146,13 @@ const parseCommand = (command, args) => {
 	if (!entry) {
 		return null;
 	}
-	return parseArgs(args, entry.spec || {});
+	const parsed = parseArgs(args, entry.spec || {});
+
+	if (entry.positionalChannel && parsed.channel == null && parsed.positionals.length > 0) {
+		parsed.channel = resolveChannelId(parsed.positionals.shift());
+	}
+
+	return parsed;
 };
 
 /**

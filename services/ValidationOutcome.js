@@ -1,5 +1,3 @@
-const config = require("../utils/config");
-
 /**
  * Single source of truth for interpreting a validateMediaFile() result and
  * applying its consequences. Both the download path (DownloadManager) and the
@@ -127,9 +125,8 @@ async function applyValidationOutcome(params) {
 	// INVALID
 	let quarantined = false;
 	if (!dryRun && quarantineFn) {
-		const wantQuarantine = config.get("download.quarantineInvalidFiles", true);
 		const q = await quarantineFn(filePath, result?.error || "validation failed", metadata);
-		quarantined = wantQuarantine ? Boolean(q?.ok) : false;
+		quarantined = Boolean(q?.quarantined);
 	}
 
 	const status = statusForVerdict(OUTCOME.INVALID, quarantined);

@@ -54,13 +54,14 @@ class MessageService {
 	 */
 	async fetchMessages(channelId, options = {}, onBatch = null) {
 		const {
-			check: enableCheck = false,
-			deep: deepValidation = false,
-			validationProfile = null,
+			validationProfile = "none",
 			verifyHash = false,
 			outputFolder = paths.getChannelExportPath(channelId),
 			lastKnownOffsetId = 0,
 		} = options;
+
+		const enableCheck = validationProfile !== "none";
+		const deepValidation = validationProfile === "full" || validationProfile === "strict";
 
 		// Initialize FFmpeg for validation if needed
 		let ffmpegPaths = null;
@@ -178,7 +179,6 @@ class MessageService {
 					outputFolder,
 					channelId,
 					ffmpegPaths,
-					deepValidation,
 					validationProfile,
 					verifyHash,
 					floodState: this.floodState,

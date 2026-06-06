@@ -137,7 +137,7 @@ test("applyValidationOutcome quarantines invalid files and marks requeue", async
 	const quarantineCalls = [];
 	const mockQuarantine = async (filePath, reason, meta) => {
 		quarantineCalls.push({ filePath, reason, meta });
-		return { ok: true };
+		return { ok: true, quarantined: true };
 	};
 
 	const result = await applyValidationOutcome({

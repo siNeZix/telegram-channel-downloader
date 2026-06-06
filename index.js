@@ -255,7 +255,11 @@ const searchOrListChannel = async (dialogs) => {
 const promptChannelSelection = async () => {
 	const dialogs = await getAllDialogs(client, true, appPaths);
 	await searchOrListChannel(dialogs);
-	return getLastSelection().channelId;
+	const sel = getLastSelection();
+	if (!sel.channelId) {
+		logMessage.error("Channel was not selected");
+	}
+	return sel.channelId;
 };
 
 /**
@@ -313,8 +317,6 @@ const runFullDownload = async (chId) => {
 
 	await getMessages(client, selectedChannelId, filesToDownload, {
 		...appPaths,
-		check: validationPlan.enabled,
-		deep: validationPlan.profile === "full" || validationPlan.profile === "strict",
 		validationProfile: validationPlan.profile,
 		verifyHash: validationPlan.verifyHash,
 	});
@@ -399,8 +401,6 @@ const runAutoMode = async (channelIdOverride) => {
 
 	await getMessages(client, selectedChannelId, filesToDownload, {
 		...appPaths,
-		check: validationPlan.enabled,
-		deep: validationPlan.profile === "full" || validationPlan.profile === "strict",
 		validationProfile: validationPlan.profile,
 		verifyHash: validationPlan.verifyHash,
 	});

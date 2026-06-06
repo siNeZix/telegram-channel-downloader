@@ -199,9 +199,7 @@ function probeIsoBmff(filePath, size) {
 		});
 
 		// Safety: never let an mp4box parse run unbounded.
-		setTimeout(() => finish(unknown("mp4box probe timed out")), 15000).unref?.();
-
-		void size;
+		setTimeout(() => finish(unknown("mp4box probe timed out")), 15000).unref();
 	});
 }
 
