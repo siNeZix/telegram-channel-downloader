@@ -379,9 +379,19 @@ class DownloadManager {
 										mediaType,
 										{
 											deepValidation,
+											profile: validationProfile,
 											expectedSize,
 										},
 									);
+
+									validationResult = await this.maybeVerifyHash({
+										result: validationResult,
+										message: refreshedMessage,
+										filePath: downloadTargetPath,
+										floodState,
+										verifyHash,
+										channelId,
+									});
 
 									if (validationResult.valid) {
 										break;

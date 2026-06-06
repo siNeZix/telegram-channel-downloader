@@ -380,26 +380,29 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false)
 		return invalidResult("File does not exist");
 	}
 
+	let stats;
 	try {
-		const stats = fs.statSync(filePath);
-		log.debug(`validateFile: file size=${stats.size} bytes`);
-
-		if (stats.size === 0) {
-			log.debug(`validateFile: file is empty: ${filePath}`);
-			return invalidResult("File is empty");
-		}
+		stats = fs.statSync(filePath);
 	} catch (err) {
 		log.error(`validateFile: cannot stat file ${filePath}: ${err.message}`);
 		return inconclusiveResult("Cannot stat file");
 	}
 
+	log.debug(`validateFile: file size=${stats.size} bytes`);
+
+	if (stats.size === 0) {
+		log.debug(`validateFile: file is empty: ${filePath}`);
+		return invalidResult("File is empty");
+	}
+
+	const size = stats.size;
 	if (type === "image") {
-		return validateImage(filePath, ffmpegBin);
+		return validateImage(filePath, ffmpegBin, size);
 	} else {
 		if (deep) {
-			return validateVideoDeep(filePath, ffmpegBin);
+			return validateVideoDeep(filePath, ffmpegBin, size);
 		}
-		return validateVideo(filePath, ffprobeBin);
+		return validateVideo(filePath, ffprobeBin, size);
 	}
 }
 
