@@ -237,7 +237,13 @@ function reopenDebugStream() {
 		newStream.on("drain", () => drainPendingWrites());
 
 		if (oldStream) {
-			writePending = writePending.filter((w) => w.stream !== oldStream);
+			// Re-target queued writes for the old stream to the new stream so log
+			// lines pending during rotation are not silently lost.
+			for (const w of writePending) {
+				if (w.stream === oldStream) {
+					w.stream = newStream;
+				}
+			}
 			try {
 				oldStream.end();
 			} catch (e) {
@@ -246,6 +252,7 @@ function reopenDebugStream() {
 		}
 
 		debugStream = newStream;
+		drainPendingWrites();
 	} catch (err) {
 		reportLoggerFailure(err, "Failed to reopen debug stream after rotation");
 	}

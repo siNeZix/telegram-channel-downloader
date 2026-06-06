@@ -3,13 +3,20 @@ const MAX_CACHE_SIZE = 1000;
 class TelegramEntityResolver {
 	constructor(client) {
 		this.client = client;
+		// Map preserves insertion order, so it doubles as an O(1) LRU list:
+		// the first key is the oldest, re-inserting a key marks it most-recent.
 		this.entityCache = new Map();
-		this.accessOrder = [];
+	}
+
+	_touch(cacheKey, entity) {
+		// Move/insert the key to the most-recent position.
+		this.entityCache.delete(cacheKey);
+		this.entityCache.set(cacheKey, entity);
 	}
 
 	_ejectOldest() {
-		while (this.accessOrder.length > MAX_CACHE_SIZE) {
-			const oldest = this.accessOrder.shift();
+		while (this.entityCache.size > MAX_CACHE_SIZE) {
+			const oldest = this.entityCache.keys().next().value;
 			this.entityCache.delete(oldest);
 		}
 	}
@@ -17,12 +24,9 @@ class TelegramEntityResolver {
 	async resolve(peerRef) {
 		const cacheKey = String(peerRef);
 		if (this.entityCache.has(cacheKey)) {
-			const idx = this.accessOrder.indexOf(cacheKey);
-			if (idx !== -1) {
-				this.accessOrder.splice(idx, 1);
-				this.accessOrder.push(cacheKey);
-			}
-			return this.entityCache.get(cacheKey);
+			const entity = this.entityCache.get(cacheKey);
+			this._touch(cacheKey, entity);
+			return entity;
 		}
 
 		let entity;
@@ -33,8 +37,8 @@ class TelegramEntityResolver {
 			await this.client.getDialogs();
 			entity = await this.client.getInputEntity(peerRef);
 		}
+
 		this.entityCache.set(cacheKey, entity);
-		this.accessOrder.push(cacheKey);
 		this._ejectOldest();
 		return entity;
 	}

@@ -2,6 +2,7 @@ const { exec, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
+const MAX_OUTPUT_BYTES = 1024 * 1024; // cap ffmpeg/ffprobe captured stdout+stderr at 1 MiB each
 const VALIDATION_TIMEOUT = 30000;
 const SAMPLE_DECODE_TIMEOUT = 45000;
 const TAIL_DECODE_TIMEOUT = 60000;
@@ -204,12 +205,34 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 			let stdout = "";
 			let stderr = "";
 
+			const appendCapped = (current, chunk) => {
+				if (current.length >= MAX_OUTPUT_BYTES) {
+					return current;
+				}
+				return (current + chunk.toString()).slice(0, MAX_OUTPUT_BYTES);
+			};
+
 			proc.stdout.on("data", (chunk) => {
-				stdout += chunk.toString();
+				stdout = appendCapped(stdout, chunk);
 			});
 			proc.stderr.on("data", (chunk) => {
-				stderr += chunk.toString();
+				stderr = appendCapped(stderr, chunk);
 			});
+
+			const killProcessTree = () => {
+				if (process.platform === "win32" && proc.pid) {
+					try {
+						const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], {
+							windowsHide: true,
+						});
+						killer.on("error", () => {});
+					} catch {
+						/* best effort on Windows */
+					}
+				} else {
+					proc.kill("SIGKILL");
+				}
+			};
 
 			proc.on("error", (err) => {
 				log.error(`execPromise: process error: ${err.message}`);
@@ -227,7 +250,7 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 
 			const timeoutId = setTimeout(() => {
 				log.error(`execPromise: timeout after ${timeout}ms`);
-				proc.kill("SIGKILL");
+				killProcessTree();
 				done({ stdout, stderr, exitCode: 1, timedOut: true });
 			}, timeout);
 
@@ -269,8 +292,7 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 			if (process.platform === "win32" && proc.pid) {
 				try {
 					// taskkill via spawn-based exec to avoid shell injection
-					const { spawn } = require("child_process");
-					const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
+					const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true });
 					killer.on("error", () => {});
 				} catch {
 					/* best effort on Windows */

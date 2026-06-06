@@ -5,8 +5,8 @@ const db = require("./db");
 const logger = require("./logger");
 
 // Кэш проверки файлов: Map<filePath, {exists: boolean, size: number}>
-let fileCheckCache = new Map();
-let snapshotsCache = new Map();
+const fileCheckCache = new Map();
+const snapshotsCache = new Map();
 
 class DownloadState {
 	constructor() {
@@ -84,7 +84,7 @@ const MEDIA_TYPES = {
 	OTHERS: "others",
 };
 
-let consoleColors = {
+const consoleColors = {
 	red: "\x1b[31m",
 	green: "\x1b[32m",
 	yellow: "\x1b[33m",
@@ -197,20 +197,36 @@ const getMediaType = (message) => {
 	return MEDIA_TYPES.OTHERS;
 };
 
+// MTProto sizes can be number or bigint (gramjs Integer). Convert to a finite
+// JS number, returning null when not representable. Number.isFinite() is false
+// for bigint, so a naive check would silently drop large-file sizes.
+const toFiniteSize = (value) => {
+	if (typeof value === "bigint") {
+		const num = Number(value);
+		return Number.isFinite(num) ? num : null;
+	}
+	if (typeof value === "number") {
+		return Number.isFinite(value) ? value : null;
+	}
+	return null;
+};
+
 const getExpectedMediaSize = (message) => {
 	if (!message?.media) {
 		return null;
 	}
 
-	if (Number.isFinite(message.media?.document?.size)) {
-		return Number(message.media.document.size);
+	const docSize = toFiniteSize(message.media?.document?.size);
+	if (docSize !== null) {
+		return docSize;
 	}
 
 	const photoSizes = message.media?.photo?.sizes;
 	if (Array.isArray(photoSizes) && photoSizes.length > 0) {
 		for (let i = photoSizes.length - 1; i >= 0; i--) {
-			if (Number.isFinite(photoSizes[i]?.size)) {
-				return Number(photoSizes[i].size);
+			const photoSize = toFiniteSize(photoSizes[i]?.size);
+			if (photoSize !== null) {
+				return photoSize;
 			}
 		}
 	}
@@ -233,7 +249,7 @@ const buildFileName = (message) => {
 			if (fileNameObj) {
 				fileName = `file_${message.id}_${sanitizeFileName(fileNameObj.fileName)}`;
 			} else {
-				let ext = mimeDB[message.media.document.mimeType]?.extensions[0];
+				let ext = mimeDB[message.media.document.mimeType]?.extensions?.[0];
 				if (ext) {
 					fileName += "." + ext;
 				}
@@ -435,7 +451,7 @@ const getDialogType = (dialog) => {
 
 const wait = (second) => {
 	//logMessage.debug(`Waiting for ${second} seconds to avoid blocking`);
-	return new Promise((resolve, reject) => {
+	return new Promise((resolve) => {
 		setTimeout(() => {
 			resolve();
 		}, second * 1000);

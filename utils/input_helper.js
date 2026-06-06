@@ -22,7 +22,7 @@ const mobileNumberInput = async () => {
 			const normalized = String(input || "").trim();
 			// Accept E.164-like numbers with optional leading +
 			const regex = /^\+?\d{8,15}$/;
-			if (!regex.test(input)) {
+			if (!regex.test(normalized)) {
 				return "Please enter a valid number in international format, e.g. +14155552671.";
 			}
 			return true; // Input is valid
@@ -73,7 +73,7 @@ const numberInput = async (message = "Please enter a number", min = -Infinity, m
 				return "Please enter a valid number.";
 			}
 			if (number > max || number < min) {
-				return `Entered number - ${number} is not between ${max} and ${min}.`;
+				return `Entered number - ${number} is not between ${min} and ${max}.`;
 			}
 
 			return true;

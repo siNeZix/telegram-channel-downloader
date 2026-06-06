@@ -1,6 +1,5 @@
 const ejs = require("ejs");
 const fs = require("fs");
-const path = require("path");
 const { updateLastSelection } = require("../utils/file_helper");
 const { logMessage, getDialogType, circularStringify } = require("../utils/helper");
 const { numberInput, textInput, booleanInput } = require("../utils/input_helper");
@@ -46,7 +45,7 @@ const getAllDialogs = async (client, sortByName = true, options = {}) => {
 
 		if (sortByName) {
 			const startSort = Date.now();
-			dialogList.sort((a, b) => a.name.localeCompare(b.name));
+			dialogList.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 			logMessage.dialog(`Sorted ${dialogList.length} dialogs by name in ${Date.now() - startSort}ms`);
 		}
 
@@ -143,8 +142,9 @@ const searchDialog = async (dialogs) => {
 
 		const searchStart = Date.now();
 		const results = [];
+		const needle = (searchString || "").toUpperCase();
 		dialogs.forEach((d, index) => {
-			if (d.name.toUpperCase().includes(searchString.toUpperCase())) {
+			if ((d.name || "").toUpperCase().includes(needle)) {
 				logMessage.info(`${index + 1} - ${d.name}`);
 				results.push({ index, name: d.name });
 			}
@@ -177,39 +177,24 @@ const searchDialog = async (dialogs) => {
 };
 
 /**
- * Searches through the dialogs for a given search string and logs the results.
- * @param {Array} dialogs - The list of dialogs.
- * @param {string} searchString - The search string.
- */
-const searchThroughDialogsWithSearchString = (dialogs, searchString) => {
-	logMessage.dialog(`searchThroughDialogsWithSearchString: searching for "${searchString}"`);
-	const results = [];
-	dialogs.forEach((d, index) => {
-		if (d.name.toUpperCase().includes(searchString.toUpperCase())) {
-			logMessage.info(`${index + 1} - ${d.name}`);
-			results.push(index);
-		}
-	});
-	logMessage.dialog(
-		`searchThroughDialogsWithSearchString found ${results.length} matches: indices=${JSON.stringify(results)}`,
-	);
-};
-
-/**
  * Retrieves the name of a dialog by its ID.
  * @param {number} channelId - The ID of the channel.
  * @returns {string|null} - The name of the dialog, or null if not found.
  */
 const getDialogName = async (client, channelId, options = {}) => {
 	try {
-		const { exportPath = paths.export } = options;
+		const { exportPath = paths.export, _refetched = false } = options;
 		const dialogListPath = paths.getDialogListPath(exportPath);
 		logMessage.dialog(`getDialogName: looking for channelId=${channelId}, path=${dialogListPath}`);
 
 		if (!fs.existsSync(dialogListPath)) {
+			if (_refetched) {
+				logMessage.error(`[DIALOG] Dialog list still missing after refetch at ${dialogListPath}`);
+				return null;
+			}
 			logMessage.dialog(`Dialog list not found at ${dialogListPath}, fetching from API`);
 			await getAllDialogs(client, true, { exportPath });
-			return getDialogName(client, channelId, options);
+			return getDialogName(client, channelId, { ...options, _refetched: true });
 		}
 
 		const dialogs = JSON.parse(fs.readFileSync(dialogListPath, "utf8"));

@@ -422,7 +422,7 @@ class ValidationService {
 			return null;
 		}
 
-		await sleep(IS_WINDOWS ? 3000 : QUARANTINE_RETRY_DELAY_MS);
+		await sleep(QUARANTINE_UNLINK_DELAY_MS);
 
 		const target = getQuarantineTarget(this.channelId, filePath, this.outputFolder);
 		paths.ensureDir(target.root);

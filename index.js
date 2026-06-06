@@ -23,7 +23,13 @@ if (deepCheckIndex !== -1) args.splice(deepCheckIndex, 1);
 
 // Parse --auto flag for non-interactive mode (accepts all defaults)
 const autoMode = args.includes("--auto") || args.includes("-y");
-if (autoMode) args.splice(args.indexOf(args.includes("--auto") ? "--auto" : "-y"), 1);
+// Remove every occurrence of both flags so they cannot leak into positional args.
+for (const flag of ["--auto", "-y"]) {
+	let idx;
+	while ((idx = args.indexOf(flag)) !== -1) {
+		args.splice(idx, 1);
+	}
+}
 
 if (args[0] === "valid") {
 	// Run validator module

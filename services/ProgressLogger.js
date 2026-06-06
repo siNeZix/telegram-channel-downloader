@@ -4,6 +4,9 @@ const CHECK_PROGRESS_PERCENT_MILESTONES = [25, 50, 75, 100];
 /** @type {Map<string, string>} последний залогированный снапшот по ключу проверки */
 const _lastCheckLogSnapshot = new Map();
 const CHECK_LOG_DEDUP_WINDOW_MS = 2000;
+// Bound the dedup map so a long multi-channel session with varying counts
+// cannot grow it without limit.
+const CHECK_LOG_SNAPSHOT_MAX_ENTRIES = 500;
 
 const formatEta = (totalSeconds) => {
 	if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
@@ -158,6 +161,12 @@ class ProgressLogger {
 		const last = _lastCheckLogSnapshot.get(dedupKey);
 		if (last && Date.now() - last.ts < CHECK_LOG_DEDUP_WINDOW_MS && last.line === line) {
 			return; // дубликат внутри окна
+		}
+		// Evict the oldest entry (Map preserves insertion order) before the map
+		// can grow unbounded.
+		if (!_lastCheckLogSnapshot.has(dedupKey) && _lastCheckLogSnapshot.size >= CHECK_LOG_SNAPSHOT_MAX_ENTRIES) {
+			const oldestKey = _lastCheckLogSnapshot.keys().next().value;
+			_lastCheckLogSnapshot.delete(oldestKey);
 		}
 		_lastCheckLogSnapshot.set(dedupKey, { ts: Date.now(), line });
 

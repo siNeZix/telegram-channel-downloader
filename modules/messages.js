@@ -161,20 +161,37 @@ const sendMessage = async (client, channelId, message) => {
 
 // --- Listen Channel (Real-time monitoring) ---
 // Обработчик новых сообщений для прослушивания канала
-const handleNewMessage = async (event, client, channelId, options = {}) => {
-	const messageChatId =
-		event.message?.peerId?.chatId || event.message?.peerId?.channelId || event.message?.peerId?.userId;
-	if (Number(messageChatId) !== Number(channelId)) {
-		return;
+// Normalize Telegram channel/chat ids by stripping the -100 supergroup prefix
+// and the leading sign, so listener comparisons match regardless of format.
+const normalizePeerId = (value) => {
+	if (value === null || value === undefined) return null;
+	let str = String(value).replace(/^-/, "");
+	if (str.startsWith("100")) {
+		str = str.slice(3);
 	}
+	return str;
+};
 
-	const messageId = event.message?.id;
-	const isMedia = !!event.message?.media;
-	logMessage.dl(`[LISTEN] New message: msgId=${messageId}, hasMedia=${isMedia}`);
-	if (isMedia) {
-		const outputFolder = resolveOutputFolder(channelId, options);
-		await getMessageDetail(client, channelId, [messageId], { ...options, outputFolder });
-		logMessage.success(`[LISTEN] Downloaded media from new message: ${messageId}`);
+const handleNewMessage = async (event, client, channelId, options = {}) => {
+	try {
+		const messageChatId =
+			event.message?.peerId?.chatId || event.message?.peerId?.channelId || event.message?.peerId?.userId;
+		if (normalizePeerId(messageChatId) !== normalizePeerId(channelId)) {
+			return;
+		}
+
+		const messageId = event.message?.id;
+		const isMedia = !!event.message?.media;
+		logMessage.dl(`[LISTEN] New message: msgId=${messageId}, hasMedia=${isMedia}`);
+		if (isMedia) {
+			const outputFolder = resolveOutputFolder(channelId, options);
+			await getMessageDetail(client, channelId, [messageId], { ...options, outputFolder });
+			logMessage.success(`[LISTEN] Downloaded media from new message: ${messageId}`);
+		}
+	} catch (err) {
+		// Never let a single failed event reject into the global unhandledRejection
+		// handler and tear down the long-running listener.
+		logMessage.error(`[LISTEN] Failed to handle new message: ${err?.message || String(err)}`);
 	}
 };
 

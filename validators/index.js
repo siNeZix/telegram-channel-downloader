@@ -152,239 +152,183 @@ async function runValidation(options = {}) {
 		}
 	}
 
-	// Load snapshots for all channels if not ignored
-	const snapshotsByChannel = new Map();
-	if (!ignoreSnapshots) {
-		log.info(`Loading snapshots to skip pre-validated files...`);
-		logMessage.valid(`[VALID] Loading snapshots from export directory: ${exportPath}`);
+	try {
+		// Load snapshots for all channels if not ignored
+		const snapshotsByChannel = new Map();
+		if (!ignoreSnapshots) {
+			log.info(`Loading snapshots to skip pre-validated files...`);
+			logMessage.valid(`[VALID] Loading snapshots from export directory: ${exportPath}`);
 
-		const entries = fs.readdirSync(exportPath, { withFileTypes: true });
-		let totalSnapshotEntries = 0;
+			const entries = fs.readdirSync(exportPath, { withFileTypes: true });
+			let totalSnapshotEntries = 0;
 
-		for (const entry of entries) {
-			if (entry.isDirectory() && entry.name !== "snapshots" && entry.name !== "quarantine") {
-				const channelPath = path.join(exportPath, entry.name);
-				db.initDatabase(entry.name, channelPath);
-				const snapshots = loadSnapshots(channelPath);
-				if (snapshots.size > 0) {
-					snapshotsByChannel.set(channelPath, snapshots);
-					totalSnapshotEntries += snapshots.size;
-					log.info(`Loaded ${snapshots.size} snapshot entries for '${entry.name}'`);
-				}
-			}
-		}
-		logMessage.valid(
-			`[VALID] Loaded ${totalSnapshotEntries} total snapshot entries across ${snapshotsByChannel.size} channels`,
-		);
-	} else {
-		logMessage.valid(`[VALID] Ignoring snapshots (ignoreSnapshots=true)`);
-	}
-
-	// Check ffmpeg availability
-	log.info(`Checking ffmpeg availability...`);
-	logMessage.valid(`[VALID] Checking ffmpeg availability`);
-
-	const ffmpegAvailable = await isFFmpegAvailable();
-	if (!ffmpegAvailable) {
-		log.error(`ffmpeg/ffprobe not found in PATH. Please install ffmpeg first.`);
-		throw new Error("ffmpeg not found in PATH");
-	}
-
-	const ffmpegPaths = await getFFmpegPaths();
-	log.success(`Found ffmpeg: ${ffmpegPaths.ffmpeg}`);
-	log.success(`Found ffprobe: ${ffmpegPaths.ffprobe}`);
-	logMessage.valid(`[VALID] ffmpeg: ${ffmpegPaths.ffmpeg}, ffprobe: ${ffmpegPaths.ffprobe}`);
-	const validationService = new ValidationService({ ffmpegPaths });
-
-	// Check export directory
-	if (!fs.existsSync(exportPath)) {
-		log.error(`Export directory not found: ${exportPath}`);
-		throw new Error(`Export directory not found: ${exportPath}`);
-	}
-
-	// Scan for files
-	log.info(`Scanning export directory: ${exportPath}`);
-	logMessage.valid(`[VALID] Scanning directory: ${exportPath}`);
-
-	const scanStart = Date.now();
-	let files = scanExportDirectory(exportPath);
-	const scanTime = Date.now() - scanStart;
-	totalScanned = files.length;
-
-	logMessage.valid(`[VALID] Scan complete: found ${totalScanned} files in ${scanTime}ms`);
-
-	if (files.length === 0) {
-		log.warn(`No media files found in export directory`);
-		return;
-	}
-
-	log.success(`Found ${totalScanned} media files`);
-
-	// Filter by type if specified
-	if (type !== "all") {
-		const oldCount = files.length;
-		files = files.filter((f) => f.type === type);
-		log.info(`Filtered to ${files.length} ${type} files`);
-		logMessage.valid(`[VALID] Type filter: ${type}, filtered ${oldCount} -> ${files.length}`);
-	}
-
-	// CACHE MODE: Process files against database
-	if (cache) {
-		log.info(`Processing files in CACHE mode...`);
-		logMessage.valid(`[VALID] Cache mode processing: ${files.length} files`);
-
-		const cacheStart = Date.now();
-		let processedCount = 0;
-
-		// Helper function to check snapshots
-		const isInSnapshot = (file) => {
-			if (snapshotsByChannel.size === 0) return false;
-
-			for (const [channelPath, snapshots] of snapshotsByChannel) {
-				if (file.path.startsWith(channelPath)) {
-					const channelName = path.basename(channelPath);
-					const relativeToChannel = file.relativePath.substring(channelName.length + 1);
-					if (snapshots.has(relativeToChannel)) {
-						return true;
+			for (const entry of entries) {
+				if (entry.isDirectory() && entry.name !== "snapshots" && entry.name !== "quarantine") {
+					const channelPath = path.join(exportPath, entry.name);
+					db.initDatabase(entry.name, channelPath);
+					const snapshots = loadSnapshots(channelPath);
+					if (snapshots.size > 0) {
+						snapshotsByChannel.set(channelPath, snapshots);
+						totalSnapshotEntries += snapshots.size;
+						log.info(`Loaded ${snapshots.size} snapshot entries for '${entry.name}'`);
 					}
 				}
 			}
-			return false;
-		};
+			logMessage.valid(
+				`[VALID] Loaded ${totalSnapshotEntries} total snapshot entries across ${snapshotsByChannel.size} channels`,
+			);
+		} else {
+			logMessage.valid(`[VALID] Ignoring snapshots (ignoreSnapshots=true)`);
+		}
 
-		// Process each file
-		for (const file of files) {
-			processedCount++;
+		// Check ffmpeg availability
+		log.info(`Checking ffmpeg availability...`);
+		logMessage.valid(`[VALID] Checking ffmpeg availability`);
 
-			// Check if file is in snapshot - skip if so
-			if (isInSnapshot(file)) {
-				totalSkipped++;
-				logMessage.cache(`[CACHE] Skipped (snapshot): ${file.relativePath}`);
-				if (verbose) {
-					printProgress(processedCount, files.length);
-				}
-				continue;
-			}
+		const ffmpegAvailable = await isFFmpegAvailable();
+		if (!ffmpegAvailable) {
+			log.error(`ffmpeg/ffprobe not found in PATH. Please install ffmpeg first.`);
+			throw new Error("ffmpeg not found in PATH");
+		}
 
-			// Extract IDs from path
-			const channelId = extractChannelIdFromPath(file.path, exportPath);
-			const messageId = extractMessageIdFromPath(file.path);
+		const ffmpegPaths = await getFFmpegPaths();
+		log.success(`Found ffmpeg: ${ffmpegPaths.ffmpeg}`);
+		log.success(`Found ffprobe: ${ffmpegPaths.ffprobe}`);
+		logMessage.valid(`[VALID] ffmpeg: ${ffmpegPaths.ffmpeg}, ffprobe: ${ffmpegPaths.ffprobe}`);
+		const validationService = new ValidationService({ ffmpegPaths });
 
-			if (!channelId || !messageId) {
-				logMessage.warn(
-					`[CACHE] Cannot extract IDs from path: ${file.relativePath}, channelId=${channelId}, msgId=${messageId}`,
-				);
-				totalErrors++;
-				continue;
-			}
+		// Check export directory
+		if (!fs.existsSync(exportPath)) {
+			log.error(`Export directory not found: ${exportPath}`);
+			throw new Error(`Export directory not found: ${exportPath}`);
+		}
 
-			// Check database for downloaded status
-			const outputFolder = path.join(exportPath, channelId);
-			const isDownloaded = db.isFileDownloaded(channelId, outputFolder, messageId);
+		// Scan for files
+		log.info(`Scanning export directory: ${exportPath}`);
+		logMessage.valid(`[VALID] Scanning directory: ${exportPath}`);
 
-			if (isDownloaded) {
-				// File is marked as downloaded in DB - confirm it's valid
-				totalDbConfirmed++;
-				logMessage.cache(`[CACHE] DB confirmed: ${file.relativePath}`);
-				if (verbose) {
-					log.success(`DB OK: ${file.relativePath}`);
-				}
-			} else {
-				// File NOT in DB as downloaded - it's corrupt/missing from DB
-				totalDbMissing++;
-				logMessage.warn(`[CACHE] DB missing: ${file.relativePath} (not marked as downloaded)`);
+		const scanStart = Date.now();
+		let files = scanExportDirectory(exportPath);
+		const scanTime = Date.now() - scanStart;
+		totalScanned = files.length;
 
-				if ((deep || strict) && fs.existsSync(file.path)) {
-					// DEEP mode: try to validate with FFmpeg
-					logMessage.info(`[CACHE] Running deep validation for: ${file.relativePath}`);
+		logMessage.valid(`[VALID] Scan complete: found ${totalScanned} files in ${scanTime}ms`);
 
-					const expectedSize = db.getExpectedSize(channelId, outputFolder, messageId);
-					const validationResult = await validationService.validateMediaFile(file.path, file.type, {
-						deepValidation: true,
-						profile: strict ? "strict" : null,
-						expectedSize,
-					});
+		if (files.length === 0) {
+			log.warn(`No media files found in export directory`);
+			return;
+		}
 
-					if (validationResult.valid) {
-						// File is actually valid! Recover it by updating DB
-						logMessage.success(`[CACHE] File is valid, recovering: ${file.relativePath}`);
-						db.setFileDownloaded(channelId, outputFolder, messageId, 1);
-						db.setValidationState(channelId, outputFolder, messageId, {
-							status: "verified",
-							profile: validationResult.profile || (strict ? "strict" : "full"),
-							error: null,
-						});
-						totalDbRecovered++;
-					} else if (validationResult.status === "inconclusive") {
-						logMessage.warn(`[CACHE] File validation inconclusive, keeping in place: ${file.relativePath}`);
-						db.setValidationState(channelId, outputFolder, messageId, {
-							status: "inconclusive",
-							profile: validationResult.profile,
-							error: validationResult.error,
-						});
-						totalInconclusive++;
-					} else {
-						// File is corrupt - delete it
-						logMessage.warn(`[CACHE] File failed validation, quarantining: ${file.relativePath}`);
-						if (dryRun) {
-							log.dryrun(`Would quarantine (not in DB, invalid): ${file.relativePath}`);
-						} else {
-							const quarantined = await quarantineFile(
-								channelId,
-								outputFolder,
-								file.path,
-								"not in DB + deep validation failed",
-								buildQuarantineMetadata(file, validationResult),
-							);
-							if (quarantined?.ok) {
-								totalDeleted++;
-								deletedEntries.push({
-									path: file.relativePath,
-									size: file.size,
-									reason: "not in DB + deep validation failed",
-									timestamp: new Date().toISOString(),
-								});
-								log.deleted(`${file.relativePath} (not in DB, invalid)`);
-							} else if (quarantined) {
-								totalErrors++;
-								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
-							}
+		log.success(`Found ${totalScanned} media files`);
+
+		// Filter by type if specified
+		if (type !== "all") {
+			const oldCount = files.length;
+			files = files.filter((f) => f.type === type);
+			log.info(`Filtered to ${files.length} ${type} files`);
+			logMessage.valid(`[VALID] Type filter: ${type}, filtered ${oldCount} -> ${files.length}`);
+		}
+
+		// CACHE MODE: Process files against database
+		if (cache) {
+			log.info(`Processing files in CACHE mode...`);
+			logMessage.valid(`[VALID] Cache mode processing: ${files.length} files`);
+
+			const cacheStart = Date.now();
+			let processedCount = 0;
+
+			// Helper function to check snapshots
+			const isInSnapshot = (file) => {
+				if (snapshotsByChannel.size === 0) return false;
+
+				for (const [channelPath, snapshots] of snapshotsByChannel) {
+					if (file.path.startsWith(channelPath)) {
+						const channelName = path.basename(channelPath);
+						const relativeToChannel = file.relativePath.substring(channelName.length + 1);
+						if (snapshots.has(relativeToChannel)) {
+							return true;
 						}
 					}
-				} else {
-					// Not in deep mode - run fast ffprobe check before quarantining
-					if (fs.existsSync(file.path)) {
-						logMessage.info(`[CACHE] File not in DB, running ffprobe check: ${file.relativePath}`);
+				}
+				return false;
+			};
 
-						const ffprobeCheck = await validationService.validateMediaFile(file.path, file.type, {
-							deepValidation: false,
+			// Process each file
+			for (const file of files) {
+				processedCount++;
+
+				// Check if file is in snapshot - skip if so
+				if (isInSnapshot(file)) {
+					totalSkipped++;
+					logMessage.cache(`[CACHE] Skipped (snapshot): ${file.relativePath}`);
+					if (verbose) {
+						printProgress(processedCount, files.length);
+					}
+					continue;
+				}
+
+				// Extract IDs from path
+				const channelId = extractChannelIdFromPath(file.path, exportPath);
+				const messageId = extractMessageIdFromPath(file.path);
+
+				if (!channelId || !messageId) {
+					logMessage.warn(
+						`[CACHE] Cannot extract IDs from path: ${file.relativePath}, channelId=${channelId}, msgId=${messageId}`,
+					);
+					totalErrors++;
+					continue;
+				}
+
+				// Check database for downloaded status
+				const outputFolder = path.join(exportPath, channelId);
+				const isDownloaded = db.isFileDownloaded(channelId, outputFolder, messageId);
+
+				if (isDownloaded) {
+					// File is marked as downloaded in DB - confirm it's valid
+					totalDbConfirmed++;
+					logMessage.cache(`[CACHE] DB confirmed: ${file.relativePath}`);
+					if (verbose) {
+						log.success(`DB OK: ${file.relativePath}`);
+					}
+				} else {
+					// File NOT in DB as downloaded - it's corrupt/missing from DB
+					totalDbMissing++;
+					logMessage.warn(`[CACHE] DB missing: ${file.relativePath} (not marked as downloaded)`);
+
+					if ((deep || strict) && fs.existsSync(file.path)) {
+						// DEEP mode: try to validate with FFmpeg
+						logMessage.info(`[CACHE] Running deep validation for: ${file.relativePath}`);
+
+						const expectedSize = db.getExpectedSize(channelId, outputFolder, messageId);
+						const validationResult = await validationService.validateMediaFile(file.path, file.type, {
+							deepValidation: true,
 							profile: strict ? "strict" : null,
-							expectedSize: db.getExpectedSize(channelId, outputFolder, messageId),
+							expectedSize,
 						});
 
-						if (ffprobeCheck.valid) {
-							logMessage.success(`[CACHE] File is valid (ffprobe), recovering: ${file.relativePath}`);
+						if (validationResult.valid) {
+							// File is actually valid! Recover it by updating DB
+							logMessage.success(`[CACHE] File is valid, recovering: ${file.relativePath}`);
 							db.setFileDownloaded(channelId, outputFolder, messageId, 1);
 							db.setValidationState(channelId, outputFolder, messageId, {
 								status: "verified",
-								profile: ffprobeCheck.profile,
+								profile: validationResult.profile || (strict ? "strict" : "full"),
 								error: null,
 							});
 							totalDbRecovered++;
-						} else if (ffprobeCheck.status === "inconclusive") {
+						} else if (validationResult.status === "inconclusive") {
 							logMessage.warn(
 								`[CACHE] File validation inconclusive, keeping in place: ${file.relativePath}`,
 							);
 							db.setValidationState(channelId, outputFolder, messageId, {
 								status: "inconclusive",
-								profile: ffprobeCheck.profile,
-								error: ffprobeCheck.error,
+								profile: validationResult.profile,
+								error: validationResult.error,
 							});
 							totalInconclusive++;
 						} else {
-							logMessage.warn(
-								`[CACHE] File not in DB and ffprobe failed, quarantining: ${file.relativePath}`,
-							);
+							// File is corrupt - delete it
+							logMessage.warn(`[CACHE] File failed validation, quarantining: ${file.relativePath}`);
 							if (dryRun) {
 								log.dryrun(`Would quarantine (not in DB, invalid): ${file.relativePath}`);
 							} else {
@@ -392,15 +336,15 @@ async function runValidation(options = {}) {
 									channelId,
 									outputFolder,
 									file.path,
-									`not in DB + ${ffprobeCheck.error}`,
-									buildQuarantineMetadata(file, ffprobeCheck),
+									"not in DB + deep validation failed",
+									buildQuarantineMetadata(file, validationResult),
 								);
 								if (quarantined?.ok) {
 									totalDeleted++;
 									deletedEntries.push({
 										path: file.relativePath,
 										size: file.size,
-										reason: `not in DB + ${ffprobeCheck.error}`,
+										reason: "not in DB + deep validation failed",
 										timestamp: new Date().toISOString(),
 									});
 									log.deleted(`${file.relativePath} (not in DB, invalid)`);
@@ -411,201 +355,268 @@ async function runValidation(options = {}) {
 							}
 						}
 					} else {
-						logMessage.info(`[CACHE] File not in DB and doesn't exist on disk: ${file.relativePath}`);
+						// Not in deep mode - run fast ffprobe check before quarantining
+						if (fs.existsSync(file.path)) {
+							logMessage.info(`[CACHE] File not in DB, running ffprobe check: ${file.relativePath}`);
+
+							const ffprobeCheck = await validationService.validateMediaFile(file.path, file.type, {
+								deepValidation: false,
+								profile: strict ? "strict" : null,
+								expectedSize: db.getExpectedSize(channelId, outputFolder, messageId),
+							});
+
+							if (ffprobeCheck.valid) {
+								logMessage.success(`[CACHE] File is valid (ffprobe), recovering: ${file.relativePath}`);
+								db.setFileDownloaded(channelId, outputFolder, messageId, 1);
+								db.setValidationState(channelId, outputFolder, messageId, {
+									status: "verified",
+									profile: ffprobeCheck.profile,
+									error: null,
+								});
+								totalDbRecovered++;
+							} else if (ffprobeCheck.status === "inconclusive") {
+								logMessage.warn(
+									`[CACHE] File validation inconclusive, keeping in place: ${file.relativePath}`,
+								);
+								db.setValidationState(channelId, outputFolder, messageId, {
+									status: "inconclusive",
+									profile: ffprobeCheck.profile,
+									error: ffprobeCheck.error,
+								});
+								totalInconclusive++;
+							} else {
+								logMessage.warn(
+									`[CACHE] File not in DB and ffprobe failed, quarantining: ${file.relativePath}`,
+								);
+								if (dryRun) {
+									log.dryrun(`Would quarantine (not in DB, invalid): ${file.relativePath}`);
+								} else {
+									const quarantined = await quarantineFile(
+										channelId,
+										outputFolder,
+										file.path,
+										`not in DB + ${ffprobeCheck.error}`,
+										buildQuarantineMetadata(file, ffprobeCheck),
+									);
+									if (quarantined?.ok) {
+										totalDeleted++;
+										deletedEntries.push({
+											path: file.relativePath,
+											size: file.size,
+											reason: `not in DB + ${ffprobeCheck.error}`,
+											timestamp: new Date().toISOString(),
+										});
+										log.deleted(`${file.relativePath} (not in DB, invalid)`);
+									} else if (quarantined) {
+										totalErrors++;
+										log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
+									}
+								}
+							}
+						} else {
+							logMessage.info(`[CACHE] File not in DB and doesn't exist on disk: ${file.relativePath}`);
+						}
 					}
+				}
+
+				if (verbose || processedCount % 100 === 0) {
+					printProgress(processedCount, files.length);
 				}
 			}
 
-			if (verbose || processedCount % 100 === 0) {
-				printProgress(processedCount, files.length);
-			}
+			const cacheTime = Date.now() - cacheStart;
+			process.stdout.write("\r" + " ".repeat(80) + "\r");
+
+			const infoLine =
+				`=== Cache Validation Complete ===\n${"=".repeat(50)}\n` +
+				`Scanned:       ${totalScanned} files\n` +
+				(totalSkipped > 0 ? `Skipped:       ${totalSkipped} files (from snapshots)\n` : "") +
+				`DB Confirmed:  ${totalDbConfirmed} files\n` +
+				`DB Missing:     ${totalDbMissing} files\n` +
+				(totalInconclusive > 0 ? `Inconclusive:   ${totalInconclusive} files (kept in place)\n` : "") +
+				(deep ? `DB Recovered:   ${totalDbRecovered} files (validated and updated)\n` : "") +
+				`Quarantined:   ${totalDeleted} files\n` +
+				(dryRun ? `DRY-RUN: No files were actually deleted\n` : "") +
+				`Duration:      ${formatDuration((Date.now() - startTime) / 1000)}\n` +
+				"=".repeat(50);
+			logMessage.info(infoLine);
+
+			logMessage.valid(
+				`=== Cache summary: total=${totalScanned}, skipped=${totalSkipped}, dbConfirmed=${totalDbConfirmed}, dbMissing=${totalDbMissing}, dbRecovered=${totalDbRecovered}, inconclusive=${totalInconclusive}, deleted=${totalDeleted}, durationMs=${cacheTime} ===`,
+			);
+
+			return {
+				totalScanned,
+				totalValid: totalDbConfirmed,
+				totalInvalid: totalDbMissing,
+				totalInconclusive,
+				totalDeleted,
+				totalSkipped,
+				totalDbConfirmed,
+				totalDbMissing,
+				totalDbRecovered,
+				errors: totalErrors,
+			};
 		}
 
-		const cacheTime = Date.now() - cacheStart;
-		process.stdout.write("\r" + " ".repeat(80) + "\r");
+		const validationStart = Date.now();
+		let processedCount = 0;
+		let activeIndex = 0;
+		const workers = [];
+		const workerCount = Math.min(MAX_PARALLEL, files.length);
 
-		const infoLine =
-			`=== Cache Validation Complete ===\n${"=".repeat(50)}\n` +
-			`Scanned:       ${totalScanned} files\n` +
-			(totalSkipped > 0 ? `Skipped:       ${totalSkipped} files (from snapshots)\n` : "") +
-			`DB Confirmed:  ${totalDbConfirmed} files\n` +
-			`DB Missing:     ${totalDbMissing} files\n` +
-			(totalInconclusive > 0 ? `Inconclusive:   ${totalInconclusive} files (kept in place)\n` : "") +
-			(deep ? `DB Recovered:   ${totalDbRecovered} files (validated and updated)\n` : "") +
-			`Quarantined:   ${totalDeleted} files\n` +
-			(dryRun ? `DRY-RUN: No files were actually deleted\n` : "") +
-			`Duration:      ${formatDuration((Date.now() - startTime) / 1000)}\n` +
-			"=".repeat(50);
-		logMessage.info(infoLine);
+		const worker = async () => {
+			while (activeIndex < files.length) {
+				const currentIndex = activeIndex++;
+				const file = files[currentIndex];
+				processedCount++;
+
+				if (!ignoreSnapshots) {
+					const channelId = extractChannelIdFromPath(file.path, exportPath);
+					if (channelId) {
+						const channelPath = path.join(exportPath, channelId);
+						const snapshots = snapshotsByChannel.get(channelPath);
+						const relativeToChannel = path.relative(channelPath, file.path);
+						if (
+							snapshots?.has(relativeToChannel) ||
+							snapshots?.has(relativeToChannel.replace(/\\/g, "/"))
+						) {
+							totalSkipped++;
+							if (verbose) {
+								log.info(`Skipped snapshot: ${file.relativePath}`);
+							}
+							continue;
+						}
+					}
+				}
+
+				try {
+					const channelId = extractChannelIdFromPath(file.path, exportPath);
+					const messageId = extractMessageIdFromPath(file.path);
+					const outputFolder = channelId ? path.join(exportPath, channelId) : null;
+					const expectedSize =
+						channelId && messageId ? db.getExpectedSize(channelId, outputFolder, messageId) : null;
+					const result = await validationService.validateMediaFile(file.path, file.type, {
+						deepValidation: deep,
+						profile: strict ? "strict" : null,
+						expectedSize,
+					});
+
+					if (result.valid) {
+						totalValid++;
+						if (channelId && messageId && outputFolder) {
+							db.setValidationState(channelId, outputFolder, messageId, {
+								status: "verified",
+								profile: result.profile,
+								error: null,
+							});
+						}
+						if (verbose) {
+							log.success(`Valid: ${file.relativePath}`);
+						}
+					} else if (result.status === "inconclusive") {
+						totalInconclusive++;
+						if (channelId && messageId && outputFolder) {
+							db.setValidationState(channelId, outputFolder, messageId, {
+								status: "inconclusive",
+								profile: result.profile,
+								error: result.error,
+							});
+						}
+						if (verbose) {
+							log.warn(`Inconclusive: ${file.relativePath} - ${result.error}`);
+						}
+					} else {
+						totalInvalid++;
+						if (dryRun) {
+							log.dryrun(`Would quarantine: ${file.relativePath} - ${result.error}`);
+						} else {
+							const quarantineChannelId = channelId || "unknown";
+							const quarantineOutputFolder = outputFolder || path.dirname(file.path);
+							const quarantined = await quarantineFile(
+								quarantineChannelId,
+								quarantineOutputFolder,
+								file.path,
+								result.error || "validation failed",
+								buildQuarantineMetadata(file, result),
+							);
+							if (quarantined?.ok) {
+								totalDeleted++;
+								deletedEntries.push({
+									path: file.relativePath,
+									size: file.size,
+									reason: result.error || "validation failed",
+									timestamp: new Date().toISOString(),
+								});
+								log.deleted(`${file.relativePath} (${result.error || "validation failed"})`);
+							} else if (quarantined) {
+								totalErrors++;
+								log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
+							}
+						}
+						if (!dryRun && channelId && messageId && outputFolder) {
+							db.setFileDownloaded(channelId, outputFolder, messageId, 0);
+							db.setValidationState(channelId, outputFolder, messageId, {
+								status: "quarantined",
+								profile: result.profile,
+								error: result.error,
+							});
+						}
+					}
+				} catch (error) {
+					totalErrors++;
+					log.error(`Validation error: ${file.relativePath} - ${error.message}`);
+				}
+
+				if (verbose || processedCount % 100 === 0 || processedCount === files.length) {
+					printProgress(processedCount, files.length);
+				}
+			}
+		};
+
+		for (let i = 0; i < workerCount; i++) {
+			workers.push(worker());
+		}
+		await Promise.all(workers);
+		process.stdout.write("\r" + " ".repeat(80) + "\r");
+		logMessage.valid(
+			`[VALID] File validation processed ${processedCount} files in ${Date.now() - validationStart}ms`,
+		);
+
+		const summaryLines = [
+			`\n${"=".repeat(50)}`,
+			`=== Validation Complete ===`,
+			`${"=".repeat(50)}`,
+			`Scanned:  ${totalScanned} files`,
+			...(totalSkipped > 0 ? [`Skipped:  ${totalSkipped} files (from snapshots)`] : []),
+			`Valid:   ${totalValid} files`,
+			`Invalid: ${totalInvalid} files`,
+			...(totalInconclusive > 0 ? [`Inconclusive: ${totalInconclusive} files (kept in place)`] : []),
+			...(dryRun ? [`Would quarantine: ${totalInvalid} files`] : [`Quarantined: ${totalDeleted} files`]),
+			`Errors:  ${totalErrors}`,
+			`Duration: ${formatDuration((Date.now() - startTime) / 1000)}`,
+			"=".repeat(50),
+		];
+		for (const line of summaryLines) {
+			logMessage.info(line);
+		}
 
 		logMessage.valid(
-			`=== Cache summary: total=${totalScanned}, skipped=${totalSkipped}, dbConfirmed=${totalDbConfirmed}, dbMissing=${totalDbMissing}, dbRecovered=${totalDbRecovered}, inconclusive=${totalInconclusive}, deleted=${totalDeleted}, durationMs=${cacheTime} ===`,
+			`=== Validation summary: total=${totalScanned}, valid=${totalValid}, invalid=${totalInvalid}, inconclusive=${totalInconclusive}, skipped=${totalSkipped}, deleted=${totalDeleted}, errors=${totalErrors}, duration=${formatDuration((Date.now() - startTime) / 1000)} ===`,
 		);
 
 		return {
 			totalScanned,
-			totalValid: totalDbConfirmed,
-			totalInvalid: totalDbMissing,
+			totalValid,
+			totalInvalid,
 			totalInconclusive,
 			totalDeleted,
 			totalSkipped,
-			totalDbConfirmed,
-			totalDbMissing,
-			totalDbRecovered,
 			errors: totalErrors,
 		};
+	} finally {
+		db.closeAllConnections();
 	}
-
-	const validationStart = Date.now();
-	let processedCount = 0;
-	let activeIndex = 0;
-	const workers = [];
-	const workerCount = Math.min(MAX_PARALLEL, files.length);
-
-	const worker = async () => {
-		while (activeIndex < files.length) {
-			const currentIndex = activeIndex++;
-			const file = files[currentIndex];
-			processedCount++;
-
-			if (!ignoreSnapshots) {
-				const channelId = extractChannelIdFromPath(file.path, exportPath);
-				if (channelId) {
-					const channelPath = path.join(exportPath, channelId);
-					const snapshots = snapshotsByChannel.get(channelPath);
-					const relativeToChannel = path.relative(channelPath, file.path);
-					if (snapshots?.has(relativeToChannel) || snapshots?.has(relativeToChannel.replace(/\\/g, "/"))) {
-						totalSkipped++;
-						if (verbose) {
-							log.info(`Skipped snapshot: ${file.relativePath}`);
-						}
-						continue;
-					}
-				}
-			}
-
-			try {
-				const channelId = extractChannelIdFromPath(file.path, exportPath);
-				const messageId = extractMessageIdFromPath(file.path);
-				const outputFolder = channelId ? path.join(exportPath, channelId) : null;
-				const expectedSize =
-					channelId && messageId ? db.getExpectedSize(channelId, outputFolder, messageId) : null;
-				const result = await validationService.validateMediaFile(file.path, file.type, {
-					deepValidation: deep,
-					profile: strict ? "strict" : null,
-					expectedSize,
-				});
-
-				if (result.valid) {
-					totalValid++;
-					if (channelId && messageId && outputFolder) {
-						db.setValidationState(channelId, outputFolder, messageId, {
-							status: "verified",
-							profile: result.profile,
-							error: null,
-						});
-					}
-					if (verbose) {
-						log.success(`Valid: ${file.relativePath}`);
-					}
-				} else if (result.status === "inconclusive") {
-					totalInconclusive++;
-					if (channelId && messageId && outputFolder) {
-						db.setValidationState(channelId, outputFolder, messageId, {
-							status: "inconclusive",
-							profile: result.profile,
-							error: result.error,
-						});
-					}
-					if (verbose) {
-						log.warn(`Inconclusive: ${file.relativePath} - ${result.error}`);
-					}
-				} else {
-					totalInvalid++;
-					if (dryRun) {
-						log.dryrun(`Would quarantine: ${file.relativePath} - ${result.error}`);
-					} else {
-						const quarantineChannelId = channelId || "unknown";
-						const quarantineOutputFolder = outputFolder || path.dirname(file.path);
-						const quarantined = await quarantineFile(
-							quarantineChannelId,
-							quarantineOutputFolder,
-							file.path,
-							result.error || "validation failed",
-							buildQuarantineMetadata(file, result),
-						);
-						if (quarantined?.ok) {
-							totalDeleted++;
-							deletedEntries.push({
-								path: file.relativePath,
-								size: file.size,
-								reason: result.error || "validation failed",
-								timestamp: new Date().toISOString(),
-							});
-							log.deleted(`${file.relativePath} (${result.error || "validation failed"})`);
-						} else if (quarantined) {
-							totalErrors++;
-							log.error(`Quarantine failed: ${file.relativePath} - ${quarantined.error}`);
-						}
-					}
-					if (channelId && messageId && outputFolder) {
-						db.setFileDownloaded(channelId, outputFolder, messageId, 0);
-						db.setValidationState(channelId, outputFolder, messageId, {
-							status: dryRun ? "failed" : "quarantined",
-							profile: result.profile,
-							error: result.error,
-						});
-					}
-				}
-			} catch (error) {
-				totalErrors++;
-				log.error(`Validation error: ${file.relativePath} - ${error.message}`);
-			}
-
-			if (verbose || processedCount % 100 === 0 || processedCount === files.length) {
-				printProgress(processedCount, files.length);
-			}
-		}
-	};
-
-	for (let i = 0; i < workerCount; i++) {
-		workers.push(worker());
-	}
-	await Promise.all(workers);
-	process.stdout.write("\r" + " ".repeat(80) + "\r");
-	logMessage.valid(`[VALID] File validation processed ${processedCount} files in ${Date.now() - validationStart}ms`);
-
-	const summaryLines = [
-		`\n${"=".repeat(50)}`,
-		`=== Validation Complete ===`,
-		`${"=".repeat(50)}`,
-		`Scanned:  ${totalScanned} files`,
-		...(totalSkipped > 0 ? [`Skipped:  ${totalSkipped} files (from snapshots)`] : []),
-		`Valid:   ${totalValid} files`,
-		`Invalid: ${totalInvalid} files`,
-		...(totalInconclusive > 0 ? [`Inconclusive: ${totalInconclusive} files (kept in place)`] : []),
-		...(dryRun ? [`Would quarantine: ${totalInvalid} files`] : [`Quarantined: ${totalDeleted} files`]),
-		`Errors:  ${totalErrors}`,
-		`Duration: ${formatDuration((Date.now() - startTime) / 1000)}`,
-		"=".repeat(50),
-	];
-	for (const line of summaryLines) {
-		logMessage.info(line);
-	}
-
-	logMessage.valid(
-		`=== Validation summary: total=${totalScanned}, valid=${totalValid}, invalid=${totalInvalid}, inconclusive=${totalInconclusive}, skipped=${totalSkipped}, deleted=${totalDeleted}, errors=${totalErrors}, duration=${formatDuration((Date.now() - startTime) / 1000)} ===`,
-	);
-
-	return {
-		totalScanned,
-		totalValid,
-		totalInvalid,
-		totalInconclusive,
-		totalDeleted,
-		totalSkipped,
-		errors: totalErrors,
-	};
 }
 
 /**

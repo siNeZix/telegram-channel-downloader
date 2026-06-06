@@ -55,6 +55,7 @@ class ConfigManager {
 		this.watchTimeout = null;
 		this.suppressWatchUntil = 0;
 		this.listeners = [];
+		this.watcher = null;
 		this._load();
 		if (this.watchEnabled) {
 			this._watch();
@@ -163,6 +164,16 @@ class ConfigManager {
 	 */
 	_watch() {
 		try {
+			// Close any previous watcher to avoid leaking handles on re-arm.
+			if (this.watcher) {
+				try {
+					this.watcher.close();
+				} catch {
+					/* ignore */
+				}
+				this.watcher = null;
+			}
+
 			const watcher = fs.watch(this.configPath, (eventType) => {
 				if (Date.now() < this.suppressWatchUntil) {
 					return;
@@ -175,10 +186,17 @@ class ConfigManager {
 					}
 					this.watchTimeout = setTimeout(() => {
 						this._reload();
+						// An atomic save (temp + rename) replaces the watched inode,
+						// which silently kills the original watch on many platforms.
+						// Re-arm the watcher so live-reload keeps working.
+						if (eventType === "rename" && this.watchEnabled) {
+							this._watch();
+						}
 					}, 100);
 				}
 			});
 
+			this.watcher = watcher;
 			if (typeof watcher.unref === "function") {
 				watcher.unref();
 			}
@@ -290,7 +308,7 @@ class ConfigManager {
 
 		for (const k of keys) {
 			if (value === null || value === undefined || typeof value !== "object") {
-				return defaultValue !== undefined ? defaultValue : DEFAULTS;
+				return defaultValue !== undefined ? defaultValue : null;
 			}
 			value = value[k];
 		}
@@ -338,6 +356,25 @@ class ConfigManager {
 	 */
 	getSection(section) {
 		return this._deepClone(this.config[section] || {});
+	}
+
+	/**
+	 * Остановить отслеживание файла и освободить ресурсы
+	 */
+	close() {
+		if (this.watchTimeout) {
+			clearTimeout(this.watchTimeout);
+			this.watchTimeout = null;
+		}
+		if (this.watcher) {
+			try {
+				this.watcher.close();
+			} catch {
+				/* ignore */
+			}
+			this.watcher = null;
+		}
+		this.listeners = [];
 	}
 }
 

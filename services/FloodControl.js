@@ -117,7 +117,7 @@ class FloodControl {
 					`[FLOOD] ${label} failed: ${err?.message || err?.errorMessage || String(err)}, floodSeconds=${floodSeconds}`,
 				);
 
-				if (floodSeconds) {
+				if (floodSeconds !== null) {
 					this.consecutiveFloods += 1;
 					this.successStreak = 0;
 					const oldLimit = this.currentParallelLimit;

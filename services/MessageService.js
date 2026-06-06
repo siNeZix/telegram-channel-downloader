@@ -15,7 +15,7 @@ const {
 } = require("../utils/helper");
 const { createFloodState } = require("./FloodControl");
 const { TelegramEntityResolver } = require("./TelegramEntityResolver");
-const { isFFmpegAvailable, getFFmpegPaths, validateFile } = require("../validators");
+const { isFFmpegAvailable, getFFmpegPaths } = require("../validators");
 
 const CHECK_PROGRESS_INTERVAL_MS = 5000;
 

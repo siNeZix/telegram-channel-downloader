@@ -15,10 +15,21 @@ const updateCredentials = (obj) => {
 	try {
 		const configFile = getConfigFile();
 		ensureParentDir(configFile);
-		let data = fs.readFileSync(configFile);
-		let credentials = JSON.parse(data);
+		let credentials = {};
+		try {
+			const data = fs.readFileSync(configFile, "utf8");
+			const trimmed = data.trim();
+			credentials = trimmed === "" ? {} : JSON.parse(trimmed);
+		} catch (readErr) {
+			if (readErr.code !== "ENOENT") {
+				throw readErr;
+			}
+		}
 		credentials = { ...credentials, ...obj };
-		fs.writeFileSync(configFile, JSON.stringify(credentials, null, 2));
+		// Atomic write (temp + rename) so a crash mid-write cannot corrupt config.
+		const tempFile = `${configFile}.tmp`;
+		fs.writeFileSync(tempFile, JSON.stringify(credentials, null, 4), "utf8");
+		fs.renameSync(tempFile, configFile);
 		logMessage.info("Credentials updated successfully");
 	} catch (err) {
 		logMessage.error(err?.message || String(err));
@@ -28,7 +39,7 @@ const updateCredentials = (obj) => {
 const getCredentials = () => {
 	try {
 		const configFile = getConfigFile();
-		const data = fs.readFileSync(configFile);
+		const data = fs.readFileSync(configFile, "utf8");
 		const credentials = JSON.parse(data);
 		return credentials;
 	} catch (err) {
@@ -41,7 +52,7 @@ const getCredentials = () => {
 const getLastSelection = () => {
 	try {
 		const lastSelectionFile = getLastSelectionFile();
-		const data = fs.readFileSync(lastSelectionFile);
+		const data = fs.readFileSync(lastSelectionFile, "utf8");
 		const last = JSON.parse(data);
 		return last;
 	} catch (err) {
@@ -59,7 +70,9 @@ const updateLastSelection = (object) => {
 			...object,
 		};
 
-		fs.writeFileSync(lastSelectionFile, JSON.stringify(last, null, 2));
+		const tempFile = `${lastSelectionFile}.tmp`;
+		fs.writeFileSync(tempFile, JSON.stringify(last, null, 2), "utf8");
+		fs.renameSync(tempFile, lastSelectionFile);
 		logMessage.debug("Last selection updated");
 	} catch (err) {
 		logMessage.error(err?.message || String(err));

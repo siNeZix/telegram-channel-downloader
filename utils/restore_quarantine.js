@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const db = require("./db");
 const paths = require("./paths");
+const logger = require("./logger");
 const { logMessage } = require("./helper");
 
 function restoreQuarantineForChannel(channelId) {
@@ -43,6 +44,18 @@ function restoreQuarantineForChannel(channelId) {
 		if (!meta.originalPath) {
 			logMessage.warn(`[RESTORE] No originalPath in ${metaFile}, skipping`);
 			skipped++;
+			continue;
+		}
+
+		// Guard against path traversal: the originalPath comes from an untrusted
+		// JSON sidecar and must resolve inside this channel's export folder.
+		const resolvedOriginal = path.resolve(meta.originalPath);
+		const resolvedRoot = path.resolve(outputFolder);
+		if (resolvedOriginal !== resolvedRoot && !resolvedOriginal.startsWith(resolvedRoot + path.sep)) {
+			logMessage.error(
+				`[RESTORE] Refusing to restore outside channel folder: ${meta.originalPath} (channel root: ${resolvedRoot})`,
+			);
+			errors++;
 			continue;
 		}
 
@@ -158,14 +171,32 @@ function restoreAll() {
 	logMessage.info(`Total skipped: ${totalSkipped}`);
 }
 
-const args = process.argv.slice(2);
+if (require.main === module) {
+	logger.init();
+	try {
+		const args = process.argv.slice(2);
 
-if (args.length > 0) {
-	for (const channelId of args) {
-		console.log(`[RESTORE] Restoring quarantine for channel ${channelId}...`);
-		const result = restoreQuarantineForChannel(channelId);
-		console.log(`  Restored: ${result.restored}, Errors: ${result.errors}, Skipped: ${result.skipped}\n`);
+		if (args.length > 0) {
+			for (const channelId of args) {
+				console.log(`[RESTORE] Restoring quarantine for channel ${channelId}...`);
+				const result = restoreQuarantineForChannel(channelId);
+				console.log(`  Restored: ${result.restored}, Errors: ${result.errors}, Skipped: ${result.skipped}\n`);
+			}
+		} else {
+			restoreAll();
+		}
+	} catch (err) {
+		logger.writeSync("error", `[RESTORE] Unhandled error: ${err?.stack || err?.message || String(err)}`);
+		console.error(err);
+		process.exitCode = 1;
+	} finally {
+		db.closeAllConnections();
+		logger.close();
 	}
-} else {
-	restoreAll();
 }
+
+module.exports = {
+	restoreQuarantineForChannel,
+	restoreAll,
+	extractMessageIdFromPath,
+};

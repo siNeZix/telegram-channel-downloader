@@ -220,6 +220,11 @@ const extractRecordFromLegacyRow = (row, outputFolder) => {
 };
 
 const createMessagesTable = (db, tableName = "messages") => {
+	// Identifier cannot be parameterized; whitelist to a safe pattern to close
+	// the DDL injection vector even though callers currently pass constants.
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+		throw new Error(`Invalid table name: ${tableName}`);
+	}
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS ${tableName} (
 			id INTEGER PRIMARY KEY,
@@ -599,8 +604,16 @@ function* getMessagesForExport(channelId, outputFolder, type = "all") {
 
 const waitForStreamDrain = (stream) =>
 	new Promise((resolve, reject) => {
-		stream.once("drain", resolve);
-		stream.once("error", reject);
+		const onDrain = () => {
+			stream.off("error", onError);
+			resolve();
+		};
+		const onError = (err) => {
+			stream.off("drain", onDrain);
+			reject(err);
+		};
+		stream.once("drain", onDrain);
+		stream.once("error", onError);
 	});
 
 const waitForStreamFinish = (stream) =>

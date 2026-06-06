@@ -1,7 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "ico", "svg"]);
+// Note: svg is intentionally excluded — ffmpeg cannot decode SVG, so including it
+// would cause valid vector files to be flagged invalid and risk quarantine.
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "ico"]);
 
 const VIDEO_EXTENSIONS = new Set(["mp4", "avi", "mkv", "mov", "webm", "flv", "wmv", "m4v", "mpg", "mpeg", "3gp"]);
 

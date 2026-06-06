@@ -71,12 +71,12 @@
                         <small>Mobile: +<%= contact.phone %></small><br/>
                       <% } %>
                             <% if (contact.lastMessage) { %>
-                            <small class="text-info"><%- contact.lastMessage.replace(/\n/g, '<br>') %></small>
+                            <small class="text-info"><%- String(contact.lastMessage).replace(/[&<>"']/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]; }).replace(/\n/g, "<br>") %></small>
                             <% } %>
                     </div>
                 </div>
                 <div class="text-right">
-                    <span class="time"><%= new Date(Number(contact.lastMessageTimestamp) * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) %></span>
+                    <span class="time"><%= contact.lastMessageTimestamp ? new Date(Number(contact.lastMessageTimestamp) * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : "" %></span>
                 </div>
             </div>
           <% }); %>

@@ -67,6 +67,7 @@ class DownloadManager {
 		this.activeDownloads = new Set();
 		this.activePartialPaths = new Set();
 		this.entityResolver = new TelegramEntityResolver(client);
+		this._cancelled = false;
 		activeManagers.add(this);
 		logMessage.dl(`[DL] DownloadManager created, client type: ${typeof client}`);
 	}
@@ -403,36 +404,6 @@ class DownloadManager {
 	}
 
 	/**
-	 * Проверить файл на валидность
-	 */
-	async validateMediaFile(mediaPath, mediaType, ffmpegPaths, deepValidation, expectedSize = null) {
-		try {
-			const validationService = new ValidationService({ ffmpegPaths });
-			const validationStart = Date.now();
-			const validationResult = await validationService.validateMediaFile(mediaPath, mediaType, {
-				deepValidation,
-				expectedSize,
-			});
-			const validationMs = Date.now() - validationStart;
-
-			if (validationResult.valid) {
-				logMessage.valid(
-					`[VALID] Valid: ${path.basename(mediaPath)} (${validationMs}ms, profile=${validationResult.profile})`,
-				);
-			} else {
-				logMessage.valid(
-					`[VALID] Invalid: ${path.basename(mediaPath)} - ${validationResult.error} (${validationMs}ms, profile=${validationResult.profile})`,
-				);
-			}
-
-			return validationResult;
-		} catch (err) {
-			logMessage.error(`[VALID] Error validating file ${mediaPath}: ${err.message}`);
-			return { valid: false, error: err.message };
-		}
-	}
-
-	/**
 	 * Удалить невалидный файл
 	 */
 	async deleteInvalidFile(mediaPath, channelId, outputFolder, ffmpegPaths) {
@@ -567,8 +538,6 @@ class DownloadManager {
 
 		// Parallel validation for existing files
 		if (filesToValidate.length > 0 && ffmpegPaths) {
-			const ffmpegBin = ffmpegPaths.ffmpeg;
-			const ffprobeBin = ffmpegPaths.ffprobe;
 			const maxParallelValidation = Math.min(10, floodState.getParallelLimit());
 			const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths });
 
@@ -834,6 +803,8 @@ class DownloadManager {
  * Скачать сообщения по ID
  */
 const downloadMessagesByIds = async (client, channelId, messageIds, downloadableFiles = {}, options = {}) => {
+	const manager = new DownloadManager(client);
+	const floodState = createFloodState();
 	try {
 		logMessage.dl(`[DL] downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)}`);
 		const outputFolder = options.outputFolder || paths.getChannelExportPath(channelId);
@@ -842,12 +813,12 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
 		db.initDatabase(channelId, outputFolder);
 		initDownloadState(channelId, outputFolder);
 
-		const manager = new DownloadManager(client);
-		const floodState = createFloodState();
+		const deepValidation = !!options.deepValidation;
+		const ffmpegPaths = options.ffmpegPaths || null;
 		manager.channelId = channelId;
 		manager.outputFolder = outputFolder;
-		manager.deepValidation = !!options.deepValidation;
-		manager.ffmpegPaths = options.ffmpegPaths || null;
+		manager.deepValidation = deepValidation;
+		manager.ffmpegPaths = ffmpegPaths;
 
 		logMessage.dl(`[DL] Fetching messages by IDs: ${JSON.stringify(messageIds)}`);
 		const inputPeer = await manager.entityResolver.resolve(channelId);
@@ -896,7 +867,7 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
 				logMessage.dl(`[DL] Queueing: msgId=${message.id}, file=${path.basename(mediaPath)}`);
 
 				const downloadPromise = manager
-					.downloadMedia(message, mediaPath, floodState, channelId, outputFolder)
+					.downloadMedia(message, mediaPath, floodState, channelId, outputFolder, ffmpegPaths, deepValidation)
 					.then((result) => {
 						if (result.success) {
 							successfulDownloads++;
@@ -933,12 +904,13 @@ const downloadMessagesByIds = async (client, channelId, messageIds, downloadable
 
 		logMessage.info(`[SUMMARY] Skipped existing: ${skippedExisting}`);
 
-		manager.cleanup();
-
 		return true;
 	} catch (error) {
 		logMessage.error(`[DL] Error downloading messages by IDs: ${error.message}`);
 		return false;
+	} finally {
+		manager.cleanup();
+		floodState.cleanup();
 	}
 };
 
