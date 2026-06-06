@@ -1,54 +1,125 @@
-const fs = require("fs");
-const path = require("path");
 const paths = require("./utils/paths");
 const { parseRuntimeOptions } = require("./utils/cli_utils");
+const {
+	parseCommand,
+	toValidationOptions,
+	toCheckMode,
+	formatTopLevelHelp,
+	formatCommandHelp,
+	COMMANDS,
+} = require("./cli/commands");
 
-// Check if running validator mode
+const pkg = require("./package.json");
+
+// argv tail; runtime path options are stripped first so command parsers only
+// see their own flags (and paths.* is configured as a side effect).
 const args = process.argv.slice(2);
-
 parseRuntimeOptions(args);
 
 const appPaths = {
 	exportPath: paths.export,
 };
 
-// Parse --check and --deep-check flags (used during normal download to validate existing files)
-const checkIndex = args.indexOf("--check");
-const deepCheckIndex = args.indexOf("--deep-check");
-const checkMode = deepCheckIndex !== -1 ? "deep" : checkIndex !== -1 ? "fast" : "none";
-
-// Remove check flags from args
-if (checkIndex !== -1) args.splice(checkIndex, 1);
-if (deepCheckIndex !== -1) args.splice(deepCheckIndex, 1);
-
-// Parse --auto flag for non-interactive mode (accepts all defaults)
-const autoMode = args.includes("--auto") || args.includes("-y");
-// Remove every occurrence of both flags so they cannot leak into positional args.
-for (const flag of ["--auto", "-y"]) {
-	let idx;
-	while ((idx = args.indexOf(flag)) !== -1) {
-		args.splice(idx, 1);
-	}
+// --- Top-level help / version (handled before any auth or heavy requires) ---
+if (args.includes("--help") || args.includes("-h")) {
+	const maybeCommand = args.find((a) => !a.startsWith("-"));
+	console.log(maybeCommand && COMMANDS[maybeCommand] ? formatCommandHelp(maybeCommand) : formatTopLevelHelp());
+	return;
+}
+if (args.includes("--version")) {
+	console.log(pkg.version);
+	return;
 }
 
-if (args[0] === "valid") {
-	// Run validator module
-	const { runValidation, parseArgs } = require("./validators");
+// First non-flag token is the command. Default to interactive menu.
+const command = args.find((a) => !a.startsWith("-")) || "menu";
+
+if (command !== "menu" && !COMMANDS[command]) {
+	console.error(`Unknown command: ${command}`);
+	console.error(formatTopLevelHelp());
+	process.exit(1);
+}
+
+// Remove the command token from args before command-specific parsing.
+if (command !== "menu") {
+	args.splice(args.indexOf(command), 1);
+}
+
+const parsed = command === "menu" ? {} : parseCommand(command, args);
+
+if (parsed && parsed.unknown && parsed.unknown.length > 0) {
+	console.error(`Unknown option(s) for '${command}': ${parsed.unknown.join(", ")}`);
+	console.error(formatCommandHelp(command));
+	process.exit(1);
+}
+
+const validationPlan =
+	command === "menu" ? { enabled: false, profile: "none", verifyHash: false } : toCheckMode(parsed);
+
+// --- Standalone validator command (no Telegram auth required) ---
+if (command === "valid") {
+	const { runValidation } = require("./validators");
 	const logger = require("./utils/logger");
-	const options = parseArgs();
+	const options = toValidationOptions(parsed);
 	logger.init();
-	// If --deep-check was passed with valid command, enable deep validation
-	if (checkMode === "deep") {
-		options.deep = true;
-	}
 	runValidation(options)
-		.then((result) => {
+		.then(() => {
 			logger.close();
 			process.exit(0);
 		})
 		.catch((err) => {
 			logger.writeSync("error", `[VALID] Validation failed: ${err?.stack || err?.message || String(err)}`);
 			console.error(`Validation failed: ${err.message}`);
+			logger.close();
+			process.exit(1);
+		});
+	return;
+}
+
+// --- Local utility commands (no Telegram auth required) ---
+if (command === "snapshot" || command === "export" || command === "restore") {
+	const logger = require("./utils/logger");
+	logger.init();
+
+	const runUtility = async () => {
+		if (command === "snapshot") {
+			const { createSnapshots } = require("./utils/save_files");
+			const { resolveExportDir } = require("./utils/cli_utils");
+			return createSnapshots(resolveExportDir(parsed.positionals[0]));
+		}
+		if (command === "export") {
+			const { main } = require("./utils/export_messages");
+			const { resolveExportDir } = require("./utils/cli_utils");
+			return main(resolveExportDir(parsed.positionals[0]));
+		}
+		// restore
+		const { restoreAll, restoreQuarantineForChannel } = require("./utils/restore_quarantine");
+		const channels = parsed.positionals;
+		if (channels.length > 0) {
+			for (const channelId of channels) {
+				restoreQuarantineForChannel(channelId);
+			}
+			return 0;
+		}
+		restoreAll();
+		return 0;
+	};
+
+	runUtility()
+		.then((exitCode) => {
+			const db = require("./utils/db");
+			db.closeAllConnections();
+			logger.close();
+			process.exit(typeof exitCode === "number" ? exitCode : 0);
+		})
+		.catch((err) => {
+			logger.writeSync(
+				"error",
+				`[${command.toUpperCase()}] Failed: ${err?.stack || err?.message || String(err)}`,
+			);
+			console.error(err);
+			const db = require("./utils/db");
+			db.closeAllConnections();
 			logger.close();
 			process.exit(1);
 		});
@@ -64,7 +135,7 @@ const {
 const { getLastSelection } = require("./utils/file_helper");
 const { initAuth } = require("./modules/auth");
 const { searchDialog, selectDialog, getDialogName, getAllDialogs } = require("./modules/dialoges");
-const { logMessage, MEDIA_TYPES } = require("./utils/helper");
+const { logMessage } = require("./utils/helper");
 const logger = require("./utils/logger");
 const db = require("./utils/db");
 const { cancelAllDownloads } = require("./services/DownloadManager");
@@ -157,22 +228,13 @@ process.on("unhandledRejection", (reason) => {
 
 const { booleanInput, downloadOptionInput, textInput, selectInput } = require("./utils/input_helper");
 
-const directRebuildChannelId = (() => {
-	if (args[0] !== "rebuild-db") {
-		return null;
-	}
-
-	const channelIdFromArgs = Number(args[1]);
-	return Number.isFinite(channelIdFromArgs) && channelIdFromArgs !== 0 ? channelIdFromArgs : null;
-})();
-
 // --- Main Menu ---
 const showMainMenu = async () => {
 	const choices = [
 		{ name: "Full Download (All messages with media)", value: "download" },
-		{ name: "Rebuild DB From API (No media download)", value: "rebuild_db" },
+		{ name: "Rebuild DB From API (No media download)", value: "rebuild-db" },
 		{ name: "Real-time Monitor (Listen for new messages)", value: "listen" },
-		{ name: "Download by IDs (Specific message IDs)", value: "download_ids" },
+		{ name: "Download by IDs (Specific message IDs)", value: "ids" },
 		{ name: "Run File Validators", value: "valid" },
 		{ name: "Exit", value: "exit" },
 	];
@@ -190,104 +252,82 @@ const searchOrListChannel = async (dialogs) => {
 	}
 };
 
+const promptChannelSelection = async () => {
+	const dialogs = await getAllDialogs(client, true, appPaths);
+	await searchOrListChannel(dialogs);
+	return getLastSelection().channelId;
+};
+
+/**
+ * Unified channel resolution shared by every interactive flow.
+ * @param {number|null} chId - channel id from CLI (already resolved), if any
+ * @param {object} [opts]
+ * @param {boolean} [opts.confirmChange] - when a CLI id is provided, ask whether to switch
+ * @returns {Promise<number|null>}
+ */
+const selectChannel = async (chId, { confirmChange = false } = {}) => {
+	if (chId) {
+		logMessage.success(`Selected channel is: ${await getDialogName(client, chId, appPaths)}`);
+		if (confirmChange && (await booleanInput("Do you want to change channel?", false))) {
+			return await promptChannelSelection();
+		}
+		return chId;
+	}
+
+	const lastSelection = getLastSelection();
+	if (lastSelection.channelId) {
+		const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
+		logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
+		const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
+		if (useLastChannel) {
+			logMessage.success(`Continuing with channel: ${lastChannelName || lastSelection.channelId}`);
+			return lastSelection.channelId;
+		}
+		return await promptChannelSelection();
+	}
+
+	return await promptChannelSelection();
+};
+
+const assertClientReady = (action) => {
+	if (!client || typeof client.getMessages !== "function") {
+		logMessage.error(`Client is not properly initialized for ${action}`);
+		return false;
+	}
+	return true;
+};
+
 // --- Download Full Channel ---
-const runFullDownload = async (client, chId) => {
-	let selectedChannelId = chId;
-
-	if (!selectedChannelId) {
-		// Проверяем, есть ли сохраненный выбор канала
-		const lastSelection = getLastSelection();
-		if (lastSelection.channelId) {
-			const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
-			logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
-			const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
-
-			if (!useLastChannel) {
-				// Пользователь хочет выбрать другой канал
-				const dialogs = await getAllDialogs(client, true, appPaths);
-				await searchOrListChannel(dialogs);
-				const newSelection = getLastSelection();
-				selectedChannelId = newSelection.channelId;
-			} else {
-				selectedChannelId = lastSelection.channelId;
-				logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
-			}
-		} else {
-			// Нет сохраненного выбора, предлагаем выбрать канал
-			const dialogs = await getAllDialogs(client, true, appPaths);
-			await searchOrListChannel(dialogs);
-			const newSelection = getLastSelection();
-			selectedChannelId = newSelection.channelId;
-		}
-	} else {
-		logMessage.success(`Selected channel is: ${await getDialogName(client, selectedChannelId, appPaths)}`);
-		const changeChannel = await booleanInput("Do you want to change channel?", false);
-		if (changeChannel) {
-			const dialogs = await getAllDialogs(client, true, appPaths);
-			await searchOrListChannel(dialogs);
-			const newSelection = getLastSelection();
-			selectedChannelId = newSelection.channelId;
-		}
-	}
-
-	const filesToDownload = await downloadOptionInput();
-
-	// Валидация клиента перед передачей
-	if (!client) {
-		logMessage.error("Client is null/undefined - authentication failed");
-		return;
-	}
-	if (typeof client.getMessages !== "function") {
-		logMessage.error(`Client is not properly initialized - getMessages is ${typeof client.getMessages}`);
-		return;
-	}
-
-	await getMessages(client, selectedChannelId, filesToDownload, {
-		...appPaths,
-		check: checkMode !== "none",
-		deep: checkMode === "deep",
-	});
-};
-
-const resolveSelectedChannelId = async (client, chId) => {
-	let selectedChannelId = chId;
-
-	if (!selectedChannelId) {
-		const lastSelection = getLastSelection();
-		if (lastSelection.channelId) {
-			const lastChannelName = await getDialogName(client, lastSelection.channelId, appPaths);
-			logMessage.info(`Last selected channel: ${lastChannelName || lastSelection.channelId}`);
-			const useLastChannel = await booleanInput("Do you want to continue with this channel?", true);
-
-			if (!useLastChannel) {
-				const dialogs = await getAllDialogs(client, true, appPaths);
-				await searchOrListChannel(dialogs);
-				const newSelection = getLastSelection();
-				selectedChannelId = newSelection.channelId;
-			} else {
-				selectedChannelId = lastSelection.channelId;
-				logMessage.success(`Continuing with channel: ${lastChannelName || selectedChannelId}`);
-			}
-		} else {
-			const dialogs = await getAllDialogs(client, true, appPaths);
-			await searchOrListChannel(dialogs);
-			const newSelection = getLastSelection();
-			selectedChannelId = newSelection.channelId;
-		}
-	}
-
-	return selectedChannelId;
-};
-
-const runDatabaseRebuild = async (client, chId) => {
-	const selectedChannelId = await resolveSelectedChannelId(client, chId);
+const runFullDownload = async (chId) => {
+	const selectedChannelId = await selectChannel(chId, { confirmChange: true });
 	if (!selectedChannelId) {
 		logMessage.error("Channel was not selected");
 		return;
 	}
 
-	if (!client || typeof client.getMessages !== "function") {
-		logMessage.error("Client is not properly initialized for DB rebuild");
+	const filesToDownload = await downloadOptionInput();
+
+	if (!assertClientReady("download")) {
+		return;
+	}
+
+	await getMessages(client, selectedChannelId, filesToDownload, {
+		...appPaths,
+		check: validationPlan.enabled,
+		deep: validationPlan.profile === "full" || validationPlan.profile === "strict",
+		validationProfile: validationPlan.profile,
+		verifyHash: validationPlan.verifyHash,
+	});
+};
+
+const runDatabaseRebuild = async (chId) => {
+	const selectedChannelId = await selectChannel(chId);
+	if (!selectedChannelId) {
+		logMessage.error("Channel was not selected");
+		return;
+	}
+
+	if (!assertClientReady("DB rebuild")) {
 		return;
 	}
 
@@ -298,30 +338,35 @@ const runDatabaseRebuild = async (client, chId) => {
 };
 
 // --- Download by IDs ---
-const runDownloadByIds = async (client) => {
-	const chIdInput = await textInput("Please Enter Channel ID: ");
-	const channelIdNum = Number(chIdInput);
+const runDownloadByIds = async (chId, messageIds) => {
+	let channelIdNum = chId;
+	if (!channelIdNum) {
+		channelIdNum = Number(await textInput("Please Enter Channel ID: "));
+	}
 	if (!channelIdNum) {
 		logMessage.error("Invalid Channel ID");
 		return;
 	}
 
-	const messageIdsText = await textInput("Please Enter Message Id(s) (separated by comma): ");
-	const messageIds = messageIdsText
-		.split(",")
-		.map(Number)
-		.filter((id) => !isNaN(id));
+	let ids = messageIds;
+	if (!ids || ids.length === 0) {
+		const messageIdsText = await textInput("Please Enter Message Id(s) (separated by comma): ");
+		ids = messageIdsText
+			.split(",")
+			.map(Number)
+			.filter((id) => !isNaN(id));
+	}
 
-	if (messageIds.length === 0) {
+	if (!ids || ids.length === 0) {
 		logMessage.error("No valid message IDs provided");
 		return;
 	}
 
-	await downloadMessagesByIds(client, channelIdNum, messageIds, appPaths);
+	await downloadMessagesByIds(client, channelIdNum, ids, appPaths);
 };
 
 // --- Auto mode: skip all prompts, use last channel or provided channelId ---
-const runAutoMode = async (client, channelIdOverride) => {
+const runAutoMode = async (channelIdOverride) => {
 	let selectedChannelId = channelIdOverride;
 
 	if (!selectedChannelId) {
@@ -331,7 +376,7 @@ const runAutoMode = async (client, channelIdOverride) => {
 			logMessage.success(`[AUTO] Using last channel: ${selectedChannelId}`);
 		} else {
 			logMessage.error(
-				"[AUTO] No channel ID provided and no last selection found. Use: npm start -- --auto <channelId>",
+				"[AUTO] No channel ID provided and no last selection found. Use: node index.js download --auto --channel <channelId>",
 			);
 			return;
 		}
@@ -354,77 +399,82 @@ const runAutoMode = async (client, channelIdOverride) => {
 
 	await getMessages(client, selectedChannelId, filesToDownload, {
 		...appPaths,
-		check: checkMode !== "none",
-		deep: checkMode === "deep",
+		check: validationPlan.enabled,
+		deep: validationPlan.profile === "full" || validationPlan.profile === "strict",
+		validationProfile: validationPlan.profile,
+		verifyHash: validationPlan.verifyHash,
 	});
 };
 
-// --- Parse --auto channel ID ---
-const autoChannelId = (() => {
-	const autoIdx = process.argv.indexOf("--auto");
-	const yIdx = process.argv.indexOf("-y");
-	const hasAuto = autoIdx !== -1;
-	const hasY = yIdx !== -1;
-
-	if (!hasAuto && !hasY) return null;
-
-	const flagIdx = hasAuto ? autoIdx : yIdx;
-	const nextVal = process.argv[flagIdx + 1];
-	const parsed = nextVal ? Number(nextVal) : NaN;
-	if (Number.isFinite(parsed) && parsed !== 0) {
-		return parsed;
-	}
-	return undefined;
-})();
+const runListener = async (chId) => {
+	listenerTeardown = await startChannelListener(client, chId || null, appPaths);
+	logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
+	// Block here until a signal triggers the global SIGINT/SIGTERM handler,
+	// which runs shutdown() (which calls listenerTeardown).
+	await new Promise(() => {});
+};
 
 // Main Entry Point
 (async () => {
 	try {
 		client = await initAuth();
 
-		if (args[0] === "rebuild-db") {
-			await runDatabaseRebuild(client, directRebuildChannelId);
-			await shutdown(0);
-			return;
+		// Direct (non-interactive) command dispatch.
+		switch (command) {
+			case "download":
+				if (parsed.auto) {
+					await runAutoMode(parsed.channel);
+				} else {
+					await runFullDownload(parsed.channel);
+				}
+				await shutdown(0);
+				return;
+
+			case "rebuild-db":
+				await runDatabaseRebuild(parsed.channel);
+				await shutdown(0);
+				return;
+
+			case "listen":
+				await runListener(parsed.channel);
+				return;
+
+			case "ids":
+				await runDownloadByIds(parsed.channel, parsed.messages);
+				await shutdown(0);
+				return;
+
+			default:
+				break;
 		}
 
-		if (autoMode || autoChannelId !== null) {
-			await runAutoMode(client, autoChannelId);
-			await shutdown(0);
-			return;
-		}
-
-		// Show main menu and get choice
+		// Interactive menu.
 		const choice = await showMainMenu();
 
 		switch (choice) {
 			case "download":
-				await runFullDownload(client, null);
+				await runFullDownload(null);
 				break;
 
-			case "rebuild_db":
-				await runDatabaseRebuild(client, null);
+			case "rebuild-db":
+				await runDatabaseRebuild(null);
 				break;
 
 			case "listen":
-				listenerTeardown = await startChannelListener(client, null, appPaths);
-				logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
-				// Block here until a signal triggers the global SIGINT/SIGTERM
-				// handler, which runs shutdown() (which calls listenerTeardown).
-				await new Promise(() => {});
+				await runListener(null);
 				break;
 
-			case "download_ids":
-				await runDownloadByIds(client);
+			case "ids":
+				await runDownloadByIds(null, null);
 				break;
 
 			case "valid": {
-				const { runValidation, parseArgs } = require("./validators");
-				const options = parseArgs();
-				if (checkMode === "deep") {
-					options.deep = true;
-				}
-				await runValidation(options);
+				const { runValidation } = require("./validators");
+				await runValidation({
+					type: "all",
+					deep: validationPlan.profile === "full" || validationPlan.profile === "strict",
+					strict: validationPlan.profile === "strict",
+				});
 				break;
 			}
 

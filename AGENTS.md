@@ -12,7 +12,7 @@ validates media with FFmpeg.
 ## Tech Stack
 
 - **Runtime:** Node.js 20 (see `.nvmrc`)
-- **Core libs:** `better-sqlite3`, `telegram` (MTProto client), `ejs`, `inquirer`, `mime-db`
+- **Core libs:** `better-sqlite3`, `telegram` (MTProto client), `ejs`, `inquirer`, `mime-db`, `file-type` (ESM-only; dynamic import), `mp4box`
 - **Dev tools:** ESLint + Prettier, native Node.js test runner
 - **External deps:** FFmpeg / FFprobe in PATH (for validation features)
 
@@ -30,6 +30,8 @@ validates media with FFmpeg.
 │       ├── messages.html        # HTML export
 │       ├── image/ video/ audio/ pdf/ sticker/
 │       └── snapshots/           # validation snapshots
+├── cli/
+│   └── commands.js              # command catalog: specs, parseCommand, help
 ├── modules/
 │   ├── auth.js                  # Telegram session auth & StringSession
 │   ├── dialoges.js              # dialog search / selection helpers
@@ -38,7 +40,9 @@ validates media with FFmpeg.
 │   ├── DownloadManager.js       # batch media download with concurrency control
 │   ├── MessageService.js        # raw → processed message transformation; DB persistence
 │   ├── TelegramEntityResolver.js# entity caching (LRU 1000) for channel info
-│   ├── ValidationService.js     # batch validator wrapper
+│   ├── ValidationService.js     # cheap-first validation cascade orchestrator
+│   ├── ValidationOutcome.js     # shared verdict classifier + DB/quarantine applier
+│   ├── HashVerifier.js          # L8 integrity via Telegram upload.getFileHashes (SHA256)
 │   ├── FloodControl.js          # RPC flood handling & exponential backoff
 │   └── ProgressLogger.js        # periodic progress summaries
 ├── utils/
@@ -46,7 +50,8 @@ validates media with FFmpeg.
 │   ├── config.js                # live-reloading config manager with defaults
 │   ├── logger.js                # file + console logger with async debug stream
 │   ├── helper.js                # MEDIA_TYPES constants, snapshot caching utils
-│   ├── cli_utils.js             # shared CLI flag parser (`takeOptionValue`, `parseRuntimeOptions`)
+│   ├── concurrency.js           # shared `runPool` worker-pool helper
+│   ├── cli_utils.js             # shared CLI flag parser (`takeOptionValue`, `parseArgs`, `parseRuntimeOptions`)
 │   ├── input_helper.js          # inquirer wrappers (`promptSafe`, EOF handling)
 │   ├── file_helper.js           # last-selection JSON, quarantine logic
 │   ├── paths.js                 # centralized path constants
@@ -54,8 +59,11 @@ validates media with FFmpeg.
 │   ├── export_messages.js       # rebuild raw_message.json & all_message.json from DB
 │   └── restore_quarantine.js    # restore files from quarantine
 ├── validators/
-│   ├── index.js                 # standalone validation CLI
+│   ├── index.js                 # validation engine (`runValidation`); standalone-runnable
 │   ├── ffmpeg_validator.js      # FFmpeg/FFprobe media checks (spawn-based, no shell)
+│   ├── error_patterns.js        # ffmpeg stderr fatal/non-fatal/unknown classifier
+│   ├── signatures.js            # L1/L2 magic-byte header + trailer checks (no deps)
+│   ├── container_probe.js       # L3 file-type + L4 mp4box moov structural probes
 │   └── file_scanner.js          # directory scanning for validation targets
 ├── templates/
 │   └── (ejs templates for HTML export)
@@ -93,6 +101,8 @@ validates media with FFmpeg.
 		"maxValidationRetries": 3,
 		"retryDelaySeconds": 2,
 		"validationProfile": "sampled",
+		"validationParallel": 10,
+		"verifyHash": false,
 		"quarantineInvalidFiles": true,
 		"trustSnapshotsForValidation": false
 	},
@@ -107,14 +117,36 @@ process is running.
 
 ## CLI Entry Modes
 
-| Command                       | Behavior                             |
-| ----------------------------- | ------------------------------------ |
-| `node index.js`               | Interactive menu                     |
-| `node index.js --auto` (`-y`) | Non-interactive; accept all defaults |
-| `node index.js --check`       | Fast file validation duringdownload  |
-| `node index.js --deep-check`  | Deep validation during download      |
-| `node index.js valid`         | Run standalone validator             |
-| `node index.js rebuild-db`    | Rebuild SQLite from Telegram API     |
+All commands route through a single unified CLI layer:
+
+- `utils/cli_utils.js` — shared `takeOptionValue`, declarative `parseArgs(spec)`,
+  `resolveChannelId`, `resolveExportDir`, `formatHelp`.
+- `cli/commands.js` — the command catalog (specs, `parseCommand`,
+  `toValidationOptions`, `toCheckMode`, help renderers).
+
+`index.js` strips runtime path options first (`parseRuntimeOptions`), resolves the
+leading non-flag token as the command, then parses command-specific flags.
+
+| Command                                             | Behavior                                |
+| --------------------------------------------------- | --------------------------------------- |
+| `node index.js`                                     | Interactive menu                        |
+| `node index.js download [--channel <id>]`           | Full download (messages + media)        |
+| `node index.js download --auto` (`-y`)              | Non-interactive download                |
+| `node index.js download --check` / `--deep`         | Validate existing files during download |
+| `node index.js rebuild-db [--channel <id>]`         | Rebuild SQLite from Telegram API        |
+| `node index.js listen [--channel <id>]`             | Real-time monitor                       |
+| `node index.js ids --channel <id> --messages <a,b>` | Download specific message IDs           |
+| `node index.js valid [path] [--deep] [--cache] ...` | Validate downloaded media               |
+| `node index.js snapshot [path]`                     | Create validation snapshots             |
+| `node index.js export [path]`                       | Rebuild JSON Lines from SQLite          |
+| `node index.js restore [channelId...]`              | Restore quarantined files               |
+
+Global options on every command: `--root`, `--export-dir`, `--config-file`,
+`--logs-dir`, plus `--help`/`-h` and `--version`. Validation depth is unified to
+`--check` (fast cascade, no decode), `--deep` (full decode), `--strict` (deep +
+strict profile). `--verify-hash` adds exact SHA256 integrity verification via
+Telegram (download/listen only; extra RPC per file). Unknown commands/flags exit
+non-zero and print help.
 
 ## Architecture Notes for Agents
 
@@ -140,7 +172,8 @@ throw to let the top-level handler catch it.
 ### Download Manager
 
 - Instance holds mutable state: `client`, `channelId`, `outputFolder`,
-  `cancelCurrent`, `checkMode`.
+  `cancelCurrent`. Validation depth flows in via the batch `context`
+  (`validationProfile`, `deepValidation`, `verifyHash`).
 - **Beware:** `processMessageBatch` receives scoped parameters (`batchChannelId`,
   `batchOutputFolder`, etc.) to avoid concurrent batch overwrites.
 - `activeDownloads` is a Set of Promises; **never call `Promise.race([])`**.
@@ -152,10 +185,37 @@ Always use `promptSafe()` from `utils/input_helper.js` instead of raw
 
 ### Validation & FFmpeg
 
-- Validation commands run via `child_process.spawn()` with argument arrays.
+- `ValidationService.validateMediaFile()` runs a **cheap-first cascade** with
+  early exit, doing one `fs.statSync` per file:
+    - L0 size match (`expectedSize`) — catches truncated downloads instantly.
+    - L1/L2 magic bytes + trailer (`validators/signatures.js`) — no deps, no spawn.
+    - L3/L4 container probe (`validators/container_probe.js`): `file-type` family
+      check + `mp4box` moov structural parse for ISO BMFF.
+    - Ln ffmpeg/ffprobe decode — only when the profile requires a decode or the
+      cheap layers were inconclusive.
+- Profiles are the cascade's stop points: `none`, `fast` (L0–L5, no decode),
+  `sampled` (default video), `full`, `strict` (`-xerror`). `--strict` no longer
+  collapses into `--deep`; the resolved profile flows through `cli/commands.js`
+  → `index.js` → `MessageService` → `DownloadManager` → `validateMediaFile`.
+- A non-zero ffmpeg exit with only **unknown** (unclassified) output is treated
+  as **inconclusive**, never an automatic pass (see `validateVideoSampled`).
+- `services/ValidationOutcome.js` is the single place that turns a result into a
+  verdict and applies it (DB state + quarantine/requeue). Both the download path
+  and `runValidation` route through it, so `inconclusive` files are **always
+  kept**, never re-downloaded.
+- `services/HashVerifier.js` (L8) verifies exact integrity via
+  `upload.getFileHashes` (SHA256). It is opt-in (`--verify-hash`) and also used to
+  auto-resolve an `inconclusive` verdict during download/listen. It costs ≥1 RPC
+  per file and a full local read, so it never runs in the standalone `valid`
+  command (no live session).
+- ffmpeg/ffprobe always run via `child_process.spawn()` with argument arrays.
   **Never use shell strings** for file paths (command injection risk).
 - `escapePathForCmd()` still exists in `ffmpeg_validator.js` for external
   consumers but is not used internally.
+- ffmpeg error classification lives in `validators/error_patterns.js`
+  (`classifyFFmpegErrors` → fatal / non-fatal / unknown buckets).
+- Validation concurrency is `download.validationParallel` (default 10), applied
+  via the shared `utils/concurrency.js` `runPool` helper.
 
 ### Logger
 
@@ -166,15 +226,19 @@ Always use `promptSafe()` from `utils/input_helper.js` instead of raw
 ## npm Scripts
 
 ```bash
-npm start          # interactive CLI
-npm run dev        # nodemon (ignores export/, config.json, validators/)
-npm test           # native Node.js test runner
-npm run valid      # standalone validator
-npm run save-files # generate validation snapshots
-npm run export-messages   # rebuild JSON Lines from SQLite
-npm run restore-quarantine # restore quarantined files
-npm run lint       # eslint
-npm run format     # prettier --write
+npm start            # interactive CLI
+npm run dev          # nodemon (ignores export/, config.json, validators/)
+npm run download     # node index.js download
+npm run download:auto # node index.js download --auto
+npm run rebuild-db   # node index.js rebuild-db
+npm run listen       # node index.js listen
+npm run valid        # node index.js valid
+npm run snapshot     # node index.js snapshot
+npm run export       # node index.js export (rebuild JSON Lines from SQLite)
+npm run restore      # node index.js restore (restore quarantined files)
+npm test             # native Node.js test runner
+npm run lint         # eslint
+npm run format       # prettier --write
 npm run format:check # prettier --check
 ```
 

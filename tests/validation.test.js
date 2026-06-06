@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { classifyFFmpegErrors } = require("../validators/ffmpeg_validator");
+const { classifyFFmpegErrors } = require("../validators/error_patterns");
 const { getTypeByExtension } = require("../validators/file_scanner");
 const { parseArgs } = require("../validators");
 

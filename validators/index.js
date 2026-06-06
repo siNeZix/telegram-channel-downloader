@@ -5,6 +5,7 @@ const { isFFmpegAvailable, getFFmpegPaths, validateFile, validateVideoDeep } = r
 const { loadSnapshots, logMessage } = require("../utils/helper");
 const paths = require("../utils/paths");
 const db = require("../utils/db");
+const config = require("../utils/config");
 const { ValidationService } = require("../services/ValidationService");
 
 const MAX_PARALLEL = 10;
@@ -120,9 +121,16 @@ async function runValidation(options = {}) {
 		type = "all",
 		deep = false,
 		strict = false,
+		verifyHash = false,
 		ignoreSnapshots = false,
 		cache = false,
 	} = options;
+
+	if (verifyHash) {
+		log.warn(
+			"--verify-hash requires a live Telegram session and is only applied during download/listen; ignoring for standalone validation.",
+		);
+	}
 
 	logMessage.valid(
 		`=== Starting file validation: dryRun=${dryRun}, verbose=${verbose}, type=${type}, deep=${deep}, strict=${strict}, cache=${cache}, exportPath=${exportPath} ===`,
@@ -153,9 +161,16 @@ async function runValidation(options = {}) {
 	}
 
 	try {
-		// Load snapshots for all channels if not ignored
+		// Load snapshots for all channels if not ignored. When
+		// download.trustSnapshotsForValidation is enabled, snapshot-covered files
+		// are always trusted (skipped) even if --ignore-snapshots was passed.
+		const trustSnapshots = config.get("download.trustSnapshotsForValidation", false);
+		const effectiveIgnoreSnapshots = ignoreSnapshots && !trustSnapshots;
+		if (ignoreSnapshots && trustSnapshots) {
+			log.info("trustSnapshotsForValidation is enabled; honouring snapshots despite --ignore-snapshots.");
+		}
 		const snapshotsByChannel = new Map();
-		if (!ignoreSnapshots) {
+		if (!effectiveIgnoreSnapshots) {
 			log.info(`Loading snapshots to skip pre-validated files...`);
 			logMessage.valid(`[VALID] Loading snapshots from export directory: ${exportPath}`);
 
@@ -471,7 +486,7 @@ async function runValidation(options = {}) {
 				const file = files[currentIndex];
 				processedCount++;
 
-				if (!ignoreSnapshots) {
+				if (!effectiveIgnoreSnapshots) {
 					const channelId = extractChannelIdFromPath(file.path, exportPath);
 					if (channelId) {
 						const channelPath = path.join(exportPath, channelId);
@@ -620,71 +635,27 @@ async function runValidation(options = {}) {
 }
 
 /**
- * Parse command line arguments
+ * Parse command line arguments for the standalone validator entry point.
+ * Delegates to the unified CLI parser so flag handling matches the rest of
+ * the tool. Reads from process.argv (minus the `valid` command word when
+ * present) and applies shared runtime path options as a side effect.
  * @returns {Object}
  */
 function parseArgs() {
+	const { parseRuntimeOptions } = require("../utils/cli_utils");
+	const { parseCommand, toValidationOptions } = require("../cli/commands");
+
 	const args = process.argv.slice(2);
-	const takeOptionValue = (optionName) => {
-		const optionIndex = args.indexOf(optionName);
-		if (optionIndex === -1) {
-			return undefined;
-		}
+	parseRuntimeOptions(args);
 
-		const optionValue = args[optionIndex + 1];
-		// Do not consume the next token if it is itself a flag (starts with "-");
-		// otherwise `--root --deep` would treat `--deep` as the root value.
-		const hasValue = optionValue !== undefined && !optionValue.startsWith("-");
-		args.splice(optionIndex, hasValue ? 2 : 1);
-		return hasValue ? optionValue : undefined;
-	};
-
-	const runtimeOptions = {
-		root: takeOptionValue("--root"),
-		exportDir: takeOptionValue("--export-dir"),
-		configFile: takeOptionValue("--config-file"),
-		logsDir: takeOptionValue("--logs-dir"),
-	};
-
-	paths.configure(runtimeOptions);
-	const options = {
-		dryRun: false,
-		verbose: false,
-		type: "all",
-		deep: false,
-		strict: false,
-		ignoreSnapshots: false,
-		cache: false,
-	};
-
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i];
-		if (arg === "--dry-run" || arg === "-d") {
-			options.dryRun = true;
-		} else if (arg === "--verbose" || arg === "-v") {
-			options.verbose = true;
-		} else if (arg === "--images" || arg === "-i") {
-			options.type = "image";
-		} else if (arg === "--videos" || arg === "-V") {
-			options.type = "video";
-		} else if (arg === "--audio" || arg === "-A") {
-			options.type = "audio";
-		} else if (arg === "--deep" || arg === "-D") {
-			options.deep = true;
-		} else if (arg === "--strict") {
-			options.strict = true;
-			options.deep = true;
-		} else if (arg === "--ignore-snapshots" || arg === "-S") {
-			options.ignoreSnapshots = true;
-		} else if (arg === "--cache" || arg === "-c") {
-			options.cache = true;
-		} else if (!arg.startsWith("-")) {
-			// Positional argument - treat as export path
-			options.exportPath = path.isAbsolute(arg) ? arg : path.resolve(paths.root, arg);
-		}
+	// Allow an optional leading `valid` command word for `node index.js valid`
+	// style invocation parity.
+	if (args[0] === "valid") {
+		args.shift();
 	}
 
-	return options;
+	const parsed = parseCommand("valid", args);
+	return toValidationOptions(parsed);
 }
 
 module.exports = {

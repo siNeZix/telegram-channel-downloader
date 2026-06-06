@@ -5,21 +5,12 @@ const paths = require("./paths");
 const logger = require("./logger");
 const { logMessage } = require("./helper");
 
-const getExportDir = () => (process.argv[2] ? path.resolve(process.argv[2]) : paths.export);
-
-if (require.main === module) {
-	const { parseRuntimeOptions } = require("./cli_utils");
-	const args = process.argv.slice(2);
-	parseRuntimeOptions(args);
-	process.argv = [process.argv[0], process.argv[1], ...args];
-}
-
 /**
  * Получает список всех каналов в директории экспорта
+ * @param {string} exportDir
  * @returns {Array<string>} Массив названий каналов
  */
-const getChannelList = () => {
-	const exportDir = getExportDir();
+const getChannelList = (exportDir) => {
 	if (!fs.existsSync(exportDir)) {
 		logMessage.error(`Export directory not found: ${exportDir}`);
 		return [];
@@ -34,8 +25,7 @@ const getChannelList = () => {
  * @param {string} channelId - ID канала
  * @returns {boolean} Успешно ли завершился экспорт
  */
-const exportChannel = async (channelId) => {
-	const exportDir = getExportDir();
+const exportChannel = async (exportDir, channelId) => {
 	const channelPath = path.join(exportDir, channelId);
 	const dbPath = path.join(channelPath, "messages.db");
 
@@ -59,13 +49,13 @@ const exportChannel = async (channelId) => {
 
 /**
  * Основная функция экспорта
+ * @param {string} [exportDir]
  */
-const main = async () => {
-	const exportDir = getExportDir();
+const main = async (exportDir = paths.export) => {
 	logMessage.info("Starting messages export to JSON files...");
 	logMessage.info(`Using export directory: ${exportDir}`);
 
-	const channels = getChannelList();
+	const channels = getChannelList(exportDir);
 
 	if (channels.length === 0) {
 		logMessage.warn("No channels found in export directory.");
@@ -78,7 +68,7 @@ const main = async () => {
 	let failCount = 0;
 
 	for (const channelId of channels) {
-		const success = await exportChannel(channelId);
+		const success = await exportChannel(exportDir, channelId);
 		if (success) {
 			successCount++;
 		} else {
@@ -93,8 +83,13 @@ const main = async () => {
 
 // Запускаем экспорт
 if (require.main === module) {
+	const { parseRuntimeOptions, resolveExportDir } = require("./cli_utils");
+	const args = process.argv.slice(2);
+	parseRuntimeOptions(args);
+	const exportDir = resolveExportDir(args[0]);
+
 	logger.init();
-	main()
+	main(exportDir)
 		.then((exitCode) => {
 			process.exitCode = exitCode;
 		})

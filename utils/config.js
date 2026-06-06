@@ -31,6 +31,8 @@ const DEFAULTS = {
 		fastForwardMessageLimit: 1000,
 		checkProgressIntervalFiles: 100,
 		validationProfile: "sampled",
+		validationParallel: 10,
+		verifyHash: false,
 		quarantineInvalidFiles: true,
 		trustSnapshotsForValidation: false,
 	},

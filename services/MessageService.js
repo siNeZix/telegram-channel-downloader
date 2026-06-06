@@ -56,6 +56,8 @@ class MessageService {
 		const {
 			check: enableCheck = false,
 			deep: deepValidation = false,
+			validationProfile = null,
+			verifyHash = false,
 			outputFolder = paths.getChannelExportPath(channelId),
 			lastKnownOffsetId = 0,
 		} = options;
@@ -177,6 +179,8 @@ class MessageService {
 					channelId,
 					ffmpegPaths,
 					deepValidation,
+					validationProfile,
+					verifyHash,
 					floodState: this.floodState,
 					stats,
 					nextOffsetId,

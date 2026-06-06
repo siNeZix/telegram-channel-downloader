@@ -172,10 +172,12 @@ function restoreAll() {
 }
 
 if (require.main === module) {
+	const { parseRuntimeOptions } = require("./cli_utils");
+	const args = process.argv.slice(2);
+	parseRuntimeOptions(args);
+
 	logger.init();
 	try {
-		const args = process.argv.slice(2);
-
 		if (args.length > 0) {
 			for (const channelId of args) {
 				console.log(`[RESTORE] Restoring quarantine for channel ${channelId}...`);

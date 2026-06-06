@@ -18,6 +18,9 @@ const { isFileReferenceExpired: isFileRefExpired } = require("./FloodControl");
 const { ProgressLogger } = require("./ProgressLogger");
 const { getEntityResolver } = require("./TelegramEntityResolver");
 const { ValidationService } = require("./ValidationService");
+const { applyValidationOutcome } = require("./ValidationOutcome");
+const { verifyFileHashes } = require("./HashVerifier");
+const { runPool } = require("../utils/concurrency");
 const { hasEnoughDiskSpace } = require("../utils/paths");
 
 const DEFAULT_DOWNLOAD_RETRY_ATTEMPTS = 3;
@@ -69,6 +72,57 @@ class DownloadManager {
 		this._cancelled = false;
 		activeManagers.add(this);
 		logMessage.dl(`[DL] DownloadManager created, client type: ${typeof client}`);
+	}
+
+	/**
+	 * Optionally upgrade a validation result with an exact SHA256 hash check
+	 * against Telegram. Runs when verifyHash is requested, or to resolve an
+	 * inconclusive verdict. A definitive hash result (valid/invalid) overrides
+	 * the prior verdict; an inconclusive hash result leaves it unchanged.
+	 *
+	 * @param {Object} args
+	 * @param {Object} args.result - prior validateMediaFile result
+	 * @param {Object} args.message
+	 * @param {string} args.filePath
+	 * @param {Object} args.floodState
+	 * @param {boolean} args.verifyHash - explicit --verify-hash request
+	 * @param {string} args.channelId
+	 * @returns {Promise<Object>} possibly-updated result
+	 */
+	async maybeVerifyHash({ result, message, filePath, floodState, verifyHash, channelId }) {
+		const isInconclusive = result && result.valid === null;
+		if (!verifyHash && !isInconclusive) {
+			return result;
+		}
+		if (!this.client || typeof this.client.invoke !== "function") {
+			return result;
+		}
+
+		try {
+			const hashResult = await verifyFileHashes({
+				client: this.client,
+				message,
+				filePath,
+				floodState,
+				refetchMessage: async () => {
+					const msgId = message?.id;
+					if (!msgId || !this.entityResolver) return null;
+					const inputPeer = await this.entityResolver.resolve(channelId);
+					const fetched = await this.client.getMessages(inputPeer, { ids: [msgId] });
+					return fetched && fetched[0] ? fetched[0] : null;
+				},
+			});
+
+			if (hashResult.valid === true || hashResult.valid === false) {
+				logMessage.valid(
+					`[VALID] Hash verify resolved ${path.basename(filePath)}: ${hashResult.status} (${hashResult.error || "match"})`,
+				);
+				return { ...hashResult, fileType: result?.fileType, priorProfile: result?.profile };
+			}
+		} catch (error) {
+			logMessage.warn(`[VALID] Hash verify error for ${path.basename(filePath)}: ${error.message}`);
+		}
+		return result;
 	}
 
 	removeFileIfExists(filePath, contextLabel = "file") {
@@ -124,7 +178,17 @@ class DownloadManager {
 	/**
 	 * Скачать медиа из сообщения
 	 */
-	async downloadMedia(message, mediaPath, floodState, channelId, outputFolder, ffmpegPaths, deepValidation) {
+	async downloadMedia(
+		message,
+		mediaPath,
+		floodState,
+		channelId,
+		outputFolder,
+		ffmpegPaths,
+		deepValidation,
+		validationProfile = null,
+		verifyHash = false,
+	) {
 		const msgId = message?.id;
 		const mediaType = message?.media ? getMediaType(message) : "none";
 		const expectedSize = getExpectedMediaSize(message);
@@ -212,7 +276,17 @@ class DownloadManager {
 				);
 				validationResult = await validationService.validateMediaFile(downloadTargetPath, mediaType, {
 					deepValidation,
+					profile: validationProfile,
 					expectedSize,
+				});
+
+				validationResult = await this.maybeVerifyHash({
+					result: validationResult,
+					message,
+					filePath: downloadTargetPath,
+					floodState,
+					verifyHash,
+					channelId,
 				});
 
 				if (validationResult.valid) {
@@ -437,7 +511,20 @@ class DownloadManager {
 	 * Обработать пачку сообщений и инициировать загрузки
 	 */
 	async processMessageBatch(messages, context) {
-		const { outputFolder, channelId, ffmpegPaths, deepValidation, floodState, downloadableFiles } = context;
+		const {
+			outputFolder,
+			channelId,
+			ffmpegPaths,
+			deepValidation,
+			validationProfile = null,
+			verifyHash = false,
+			floodState,
+			downloadableFiles,
+		} = context;
+		// Resolve the explicit profile once for the whole batch so download-time
+		// validation matches the standalone validator (strict no longer collapses
+		// into deep). Falls back to the deep/sampled defaults when not provided.
+		const resolvedProfile = validationProfile || (deepValidation ? "full" : null);
 
 		logMessage.dl(`[DL] processMessageBatch: channelId=${channelId}, messageCount=${messages.length}`);
 
@@ -537,7 +624,10 @@ class DownloadManager {
 
 		// Parallel validation for existing files
 		if (filesToValidate.length > 0 && ffmpegPaths) {
-			const maxParallelValidation = Math.min(10, floodState.getParallelLimit());
+			const maxParallelValidation = Math.min(
+				config.get("download.validationParallel", 10),
+				floodState.getParallelLimit(),
+			);
 			const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths });
 
 			logMessage.valid(
@@ -545,65 +635,72 @@ class DownloadManager {
 			);
 
 			const validationStart = Date.now();
-			const validationResults = { errors: [] };
-			let fileIndex = 0;
-			const worker = async () => {
-				while (fileIndex < filesToValidate.length) {
-					const currentIndex = fileIndex++;
-					if (currentIndex >= filesToValidate.length) {
-						break;
-					}
-
-					const fileInfo = filesToValidate[currentIndex];
-					const result = await validationService.validateMediaFile(fileInfo.mediaPath, fileInfo.mediaType, {
+			const poolResults = await runPool(
+				filesToValidate,
+				async (fileInfo) => {
+					let result = await validationService.validateMediaFile(fileInfo.mediaPath, fileInfo.mediaType, {
 						deepValidation,
+						profile: resolvedProfile,
 						expectedSize: getExpectedMediaSize(fileInfo.message),
 					});
+					result = await this.maybeVerifyHash({
+						result,
+						message: fileInfo.message,
+						filePath: fileInfo.mediaPath,
+						floodState,
+						verifyHash,
+						channelId,
+					});
 					logMessage.valid(
-						`[VALID] Result: ${path.basename(fileInfo.mediaPath)} = ${result.valid ? "valid" : "invalid"}: ${result.error || ""}`,
+						`[VALID] Result: ${path.basename(fileInfo.mediaPath)} = ${result.status}: ${result.error || ""}`,
 					);
-					validationCount++;
-					if (!result.valid) {
-						validationResults.errors.push({ path: fileInfo.mediaPath, error: result.error });
-					}
-				}
-			};
-			const workers = [];
-			for (let i = 0; i < Math.min(maxParallelValidation, filesToValidate.length); i++) {
-				workers.push(worker());
-			}
-			await Promise.all(workers);
+					return result;
+				},
+				{ concurrency: maxParallelValidation },
+			);
+			validationCount += filesToValidate.length;
 			const validationElapsed = Date.now() - validationStart;
 			validationTotalMs += validationElapsed;
-			logMessage.valid(
-				`[VALID] Parallel validation complete: ${validationResults.errors.length} invalid, time=${validationElapsed}ms`,
-			);
 
-			// Process validation results
-			const errorByPath = new Map(validationResults.errors.map((e) => [e.path, e]));
-			for (const fileInfo of filesToValidate) {
-				const errorEntry = errorByPath.get(fileInfo.mediaPath);
-				if (errorEntry) {
+			// Apply outcomes through the shared handler so inconclusive files are
+			// kept (never re-downloaded) and only true invalids are requeued.
+			let invalidCount = 0;
+			for (const entry of poolResults) {
+				const fileInfo = entry.item;
+				const result = entry.ok
+					? entry.value
+					: { valid: null, status: "inconclusive", error: entry.error?.message };
+
+				const outcome = await applyValidationOutcome({
+					result,
+					channelId,
+					outputFolder,
+					messageId: fileInfo.message.id,
+					filePath: fileInfo.mediaPath,
+					db,
+					quarantineFn: (filePath, reason) =>
+						this.deleteInvalidFile(filePath, channelId, outputFolder, ffmpegPaths).then(() => ({
+							ok: true,
+						})),
+					metadata: { reason: result.error || "validation failed" },
+				});
+
+				if (outcome.requeue) {
+					invalidCount++;
 					logMessage.warn(
-						`[VALID] File failed validation: ${path.basename(fileInfo.mediaPath)} - ${errorEntry.error}`,
+						`[VALID] File failed validation: ${path.basename(fileInfo.mediaPath)} - ${result.error}`,
 					);
 					logMessage.info(`[VALID] Will re-download: ${path.basename(fileInfo.mediaPath)}`);
 					fileInfo.message._fileExist = false;
-					await this.deleteInvalidFile(fileInfo.mediaPath, channelId, outputFolder, ffmpegPaths);
-					if (channelId && outputFolder) {
-						db.setFileDownloaded(channelId, outputFolder, fileInfo.message.id, 0);
-						db.setValidationState(channelId, outputFolder, fileInfo.message.id, {
-							status: config.get("download.quarantineInvalidFiles", true) ? "quarantined" : "failed",
-							profile: deepValidation ? "full" : config.get("download.validationProfile", "sampled"),
-							error: errorEntry.error,
-						});
-					}
 					batchSkippedExisting--;
 					skippedExisting--;
 					batchNewFiles++;
 					batchFilesToDownload++;
 				}
 			}
+			logMessage.valid(
+				`[VALID] Parallel validation complete: ${invalidCount} invalid, time=${validationElapsed}ms`,
+			);
 		}
 
 		progressLogger.updateStats({ totalFiles: batchFilesToDownload });
@@ -664,6 +761,8 @@ class DownloadManager {
 						outputFolder,
 						batchFFmpegPaths,
 						batchDeepValidation,
+						resolvedProfile,
+						verifyHash,
 					)
 						.then((result) => {
 							if (result.success) {
@@ -708,7 +807,7 @@ class DownloadManager {
 						if (!message._fromSnapshot && ffmpegPaths && channelId && outputFolder) {
 							db.setValidationState(channelId, outputFolder, message.id, {
 								status: "verified",
-								profile: deepValidation ? "full" : config.get("download.validationProfile", "sampled"),
+								profile: resolvedProfile || config.get("download.validationProfile", "sampled"),
 								error: null,
 							});
 						}

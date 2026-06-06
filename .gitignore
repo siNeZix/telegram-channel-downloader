@@ -1,10 +1,41 @@
+# Secrets & config (local only)
 config.json
+.env
+.env.*
+!.env.example
+
+# Output & runtime data
 export/
 export
-.DS_Store
-node_modules/
-plans/
 logs/
+*.log
+snapshots/
+quarantine/
+
+# Dependencies
+node_modules/
+
+# Lockfiles (project uses npm — package-lock.json is tracked)
+pnpm-lock.yaml
+pnpm-workspace.yaml
+yarn.lock
+
+# Local planning / scratch
+plans/
+logs_errors_analysis.md
+*.tmp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
 
 # Deploy script (local only)
 deploy.cmd

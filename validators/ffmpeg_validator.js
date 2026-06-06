@@ -1,6 +1,7 @@
 const { exec, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const { classifyFFmpegErrors } = require("./error_patterns");
 
 const MAX_OUTPUT_BYTES = 1024 * 1024; // cap ffmpeg/ffprobe captured stdout+stderr at 1 MiB each
 const VALIDATION_TIMEOUT = 30000;
@@ -9,88 +10,6 @@ const TAIL_DECODE_TIMEOUT = 60000;
 const DEEP_DECODE_TIMEOUT = 90000;
 const SIZE_BASED_TIMEOUT_MB = 256;
 const TIMEOUT_PER_MB_MS = 80;
-
-const FATAL_ERROR_PATTERNS = [
-	/moov atom not found/i,
-	/truncated file/i,
-	/no frame found/i,
-	/could not find codec parameters/i,
-	/could not find header/i,
-	/invalid data found/i,
-	/cannot find codec/i,
-	/no such file or directory/i,
-	/permission denied/i,
-	/error number .+ occurred/i,
-	/bitstream filter error/i,
-	/format not found/i,
-	/could not open/i,
-	/protocol not found/i,
-	/invalid argument/i,
-	/no output stream/i,
-	/encoder .* not found/i,
-	/muxer .* not found/i,
-];
-
-const NON_FATAL_ERROR_PATTERNS = [
-	/missing reference picture/i,
-	/concealing .* errors/i,
-	/decode_slice_header error/i,
-	/non-existing SPS .* decoded/i,
-	/non-existing PPS .* decoded/i,
-	/non-existing SPS/i,
-	/non-existing PPS/i,
-	/error while decoding MB/i,
-	/corrupt input packet/i,
-	/AVPacket side data/i,
-	/invalid NAL unit size/i,
-	/missing picture in access unit/i,
-	/First frame .* second frame/i,
-	/discarding .* samples/i,
-	/mismatch in allocated/i,
-	/hmm: cannot stream .* fast/i,
-	/out of range:/i,
-	/noise .* exceed/i,
-	/picture size .* invalid/i,
-	/mismatch.*in.*header/i,
-];
-
-function classifyFFmpegErrors(stderr, stdout) {
-	const combined = (stderr || "") + "\n" + (stdout || "");
-	const lines = combined.split(/\r?\n/).filter((l) => l.trim());
-
-	const fatalErrors = [];
-	const nonFatalErrors = [];
-	const unknownErrors = [];
-
-	for (const line of lines) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-
-		let isNonFatal = false;
-		for (const pattern of NON_FATAL_ERROR_PATTERNS) {
-			if (pattern.test(trimmed)) {
-				nonFatalErrors.push(trimmed);
-				isNonFatal = true;
-				break;
-			}
-		}
-		if (isNonFatal) continue;
-
-		let isFatal = false;
-		for (const pattern of FATAL_ERROR_PATTERNS) {
-			if (pattern.test(trimmed)) {
-				fatalErrors.push(trimmed);
-				isFatal = true;
-				break;
-			}
-		}
-		if (!isFatal && !isNonFatal && trimmed.length > 0) {
-			unknownErrors.push(trimmed);
-		}
-	}
-
-	return { fatalErrors, nonFatalErrors, unknownErrors };
-}
 
 function validResult(extra = {}) {
 	return { valid: true, status: "valid", error: null, ...extra };
@@ -104,15 +23,27 @@ function inconclusiveResult(error, extra = {}) {
 	return { valid: null, status: "inconclusive", error, ...extra };
 }
 
-function getScaledTimeout(filePath, baseTimeout) {
-	try {
-		const stats = fs.statSync(filePath);
-		const sizeMB = stats.size / (1024 * 1024);
-		if (sizeMB > SIZE_BASED_TIMEOUT_MB) {
-			return baseTimeout + Math.ceil(sizeMB - SIZE_BASED_TIMEOUT_MB) * TIMEOUT_PER_MB_MS;
+/**
+ * Scale a base timeout up for large files. Accepts an optional pre-resolved file
+ * size (bytes) to avoid a redundant fs.statSync in hot loops; falls back to
+ * statSync only when the size is not provided.
+ * @param {string} filePath
+ * @param {number} baseTimeout
+ * @param {number} [knownSize] - file size in bytes if already known
+ * @returns {number}
+ */
+function getScaledTimeout(filePath, baseTimeout, knownSize = null) {
+	let sizeBytes = Number.isFinite(knownSize) ? knownSize : null;
+	if (sizeBytes === null) {
+		try {
+			sizeBytes = fs.statSync(filePath).size;
+		} catch {
+			return baseTimeout;
 		}
-	} catch {
-		/* use base */
+	}
+	const sizeMB = sizeBytes / (1024 * 1024);
+	if (sizeMB > SIZE_BASED_TIMEOUT_MB) {
+		return baseTimeout + Math.ceil(sizeMB - SIZE_BASED_TIMEOUT_MB) * TIMEOUT_PER_MB_MS;
 	}
 	return baseTimeout;
 }
@@ -309,14 +240,14 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 	});
 }
 
-async function validateImage(filePath, ffmpegBin) {
+async function validateImage(filePath, ffmpegBin, knownSize = null) {
 	log.debug(`validateImage: file=${filePath}, ffmpeg=${ffmpegBin}`);
 
 	const cmd = [ffmpegBin, "-v", "error", "-i", filePath, "-f", "null", "-"];
 
 	log.debug(`validateImage: running command: ${cmd.join(" ")}`);
 
-	const result = await execPromise(cmd, VALIDATION_TIMEOUT);
+	const result = await execPromise(cmd, getScaledTimeout(filePath, VALIDATION_TIMEOUT, knownSize));
 
 	if (result.exitCode === 0) {
 		log.debug(`validateImage: valid, file=${path.basename(filePath)}`);
@@ -348,7 +279,7 @@ async function validateImage(filePath, ffmpegBin) {
 	return invalidResult(`ffmpeg: ${errorMsg}`, { fatalErrors, nonFatalErrors, unknownErrors });
 }
 
-async function validateVideo(filePath, ffprobeBin) {
+async function validateVideo(filePath, ffprobeBin, knownSize = null) {
 	log.debug(`validateVideo: file=${filePath}, ffprobe=${ffprobeBin}`);
 
 	const cmd = [
@@ -364,7 +295,7 @@ async function validateVideo(filePath, ffprobeBin) {
 
 	log.debug(`validateVideo: running command: ${cmd.join(" ")}`);
 
-	const timeout = getScaledTimeout(filePath, VALIDATION_TIMEOUT);
+	const timeout = getScaledTimeout(filePath, VALIDATION_TIMEOUT, knownSize);
 	const result = await execPromise(cmd, timeout);
 
 	if (result.exitCode !== 0) {
@@ -399,12 +330,12 @@ async function validateVideo(filePath, ffprobeBin) {
 	return inconclusiveResult(`ffprobe: no duration found (${output.substring(0, 50)})`);
 }
 
-async function validateVideoDeep(filePath, ffmpegBin) {
+async function validateVideoDeep(filePath, ffmpegBin, knownSize = null) {
 	log.debug(`validateVideoDeep: file=${filePath}, ffmpeg=${ffmpegBin}`);
 
 	const cmd = [ffmpegBin, "-v", "error", "-i", filePath, "-f", "null", "-"];
 
-	const timeout = getScaledTimeout(filePath, DEEP_DECODE_TIMEOUT);
+	const timeout = getScaledTimeout(filePath, DEEP_DECODE_TIMEOUT, knownSize);
 	log.debug(`validateVideoDeep: running deep validation command, timeout=${timeout}ms`);
 
 	const result = await execPromise(cmd, timeout);
@@ -472,58 +403,6 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false)
 	}
 }
 
-async function validateFiles(files, ffmpegPaths, progressCallback, maxParallel = 10, deep = false) {
-	log.debug(`validateFiles: count=${files.length}, maxParallel=${maxParallel}, deep=${deep}`);
-
-	let valid = 0;
-	let invalid = 0;
-	const errors = [];
-
-	let fileIndex = 0;
-
-	async function worker() {
-		while (fileIndex < files.length) {
-			const currentIndex = fileIndex++;
-
-			if (currentIndex >= files.length) {
-				break;
-			}
-
-			const file = files[currentIndex];
-			log.debug(`validateFiles: processing file ${currentIndex + 1}/${files.length}: ${file.path}`);
-
-			const result = await validateFile(file.path, file.type, ffmpegPaths.ffmpeg, ffmpegPaths.ffprobe, deep);
-
-			if (progressCallback) {
-				progressCallback(file, result);
-			}
-
-			if (result.valid) {
-				valid++;
-			} else {
-				invalid++;
-				errors.push({
-					path: file.relativePath || file.path,
-					error: result.error,
-					size: file.size,
-				});
-			}
-		}
-	}
-
-	log.debug(`validateFiles: starting ${Math.min(maxParallel, files.length)} workers`);
-	const workers = [];
-	for (let i = 0; i < Math.min(maxParallel, files.length); i++) {
-		workers.push(worker());
-	}
-
-	await Promise.all(workers);
-
-	log.debug(`validateFiles: complete, valid=${valid}, invalid=${invalid}, errors=${errors.length}`);
-
-	return { valid, invalid, errors };
-}
-
 async function isFFmpegAvailable() {
 	const result = await findFFmpeg();
 	log.debug(`isFFmpegAvailable: ${result !== null}`);
@@ -540,7 +419,6 @@ module.exports = {
 	getFFmpegPaths,
 	execPromise,
 	validateFile,
-	validateFiles,
 	validateImage,
 	validateVideo,
 	validateVideoDeep,

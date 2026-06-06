@@ -177,18 +177,25 @@ Flow:
 4. Choose which file types should be downloaded.
 5. Wait until message history and media are processed.
 
-The downloader can optionally work with additional checks:
+The downloader can optionally validate existing files during the run:
 
 ```bash
-node index.js --check
+node index.js download --check
 ```
 
 ```bash
-node index.js --deep-check
+node index.js download --deep
 ```
 
 - `--check` enables fast checking during the download flow.
-- `--deep-check` enables deeper checking during the download flow.
+- `--deep` enables deeper (full-decode) checking during the download flow.
+- `--strict` implies `--deep` and applies the strict validation profile.
+
+Non-interactive download (accept all defaults):
+
+```bash
+node index.js download --auto --channel <channelId>
+```
 
 ### 2. Real-time monitor
 
@@ -214,6 +221,37 @@ Flow:
 3. Enter the channel ID.
 4. Enter comma-separated message IDs.
 
+## Command-line interface
+
+All functionality is exposed through a single entry point with subcommands:
+
+```bash
+node index.js [command] [options]
+```
+
+| Command      | Behavior                                             |
+| ------------ | ---------------------------------------------------- |
+| `(none)`     | Interactive menu                                     |
+| `download`   | Full download (messages + media)                     |
+| `rebuild-db` | Rebuild SQLite from the Telegram API (no media)      |
+| `listen`     | Real-time monitor for new messages                   |
+| `ids`        | Download specific message IDs                        |
+| `valid`      | Validate downloaded media files                      |
+| `snapshot`   | Create validation snapshots for all channels         |
+| `export`     | Rebuild JSON Lines exports from the SQLite databases |
+| `restore`    | Restore quarantined files                            |
+
+Common options:
+
+- `--channel <id>` — target channel (download / rebuild-db / listen / ids)
+- `--messages <a,b,c>` — message IDs for `ids`
+- `--auto`, `-y` — non-interactive download
+- `--check` / `--deep` / `--strict` — validation depth (download / valid)
+- Global path overrides: `--root`, `--export-dir`, `--config-file`, `--logs-dir`
+- `--help`, `-h` and `--version`
+
+Run `node index.js <command> --help` for per-command options.
+
 ## Available npm scripts
 
 ### `npm start`
@@ -226,13 +264,13 @@ Runs the same CLI with Nodemon.
 
 ### `npm run valid`
 
-Runs the standalone validator CLI from `validators/index.js`.
+Runs the validator (`node index.js valid`).
 
-### `npm run save-files`
+### `npm run snapshot`
 
 Scans every exported channel and creates snapshot files in each channel `snapshots/` folder.
 
-### `npm run export-messages`
+### `npm run export`
 
 Reads every channel SQLite database and regenerates:
 
@@ -305,7 +343,7 @@ This format is useful because:
 
 ## Validation
 
-The validator is implemented as a separate CLI in `validators/index.js` and uses FFmpeg/FFprobe.
+The validator runs through `node index.js valid` and uses FFmpeg/FFprobe.
 
 ### Basic validation
 
@@ -318,37 +356,37 @@ npm run valid
 Show what would be deleted without actually deleting files:
 
 ```bash
-node validators/index.js --dry-run
+node index.js valid --dry-run
 ```
 
 ### Verbose mode
 
 ```bash
-node validators/index.js --verbose
+node index.js valid --verbose
 ```
 
 ### Validate only images
 
 ```bash
-node validators/index.js --images
+node index.js valid --images
 ```
 
 ### Validate only videos
 
 ```bash
-node validators/index.js --videos
+node index.js valid --videos
 ```
 
 ### Deep validation
 
 ```bash
-node validators/index.js --deep
+node index.js valid --deep
 ```
 
 ### Ignore snapshots
 
 ```bash
-node validators/index.js --ignore-snapshots
+node index.js valid --ignore-snapshots
 ```
 
 ### Cache mode
@@ -356,7 +394,7 @@ node validators/index.js --ignore-snapshots
 Compare files against the SQLite `downloaded` state:
 
 ```bash
-node validators/index.js --cache
+node index.js valid --cache
 ```
 
 ### Cache mode with deep recovery
@@ -364,13 +402,13 @@ node validators/index.js --cache
 Try to validate DB-missing files and restore DB state for valid ones:
 
 ```bash
-node validators/index.js --cache --deep
+node index.js valid --cache --deep
 ```
 
 ### Validate a custom export directory
 
 ```bash
-node validators/index.js ./export
+node index.js valid ./export
 ```
 
 Validation behavior summary:
@@ -387,7 +425,7 @@ Validation behavior summary:
 Snapshots are created with:
 
 ```bash
-npm run save-files
+npm run snapshot
 ```
 
 What snapshots are used for:
@@ -407,7 +445,7 @@ export/<channelId>/snapshots/
 If JSON export files are missing, outdated, or need to be rebuilt from the database, run:
 
 ```bash
-npm run export-messages
+npm run export
 ```
 
 This scans channel folders in `export/`, opens each `messages.db`, and recreates JSON Lines exports.

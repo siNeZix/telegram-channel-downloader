@@ -111,11 +111,11 @@ function createChannelSnapshot(channelName, channelPath) {
 
 // Run if executed directly
 if (require.main === module) {
-	const { parseRuntimeOptions } = require("./cli_utils");
+	const { parseRuntimeOptions, resolveExportDir } = require("./cli_utils");
 	const args = process.argv.slice(2);
 	parseRuntimeOptions(args);
 
-	const exportDirArg = args[0] ? path.resolve(args[0]) : paths.export;
+	const exportDirArg = resolveExportDir(args[0]);
 	logger.init();
 
 	try {

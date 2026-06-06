@@ -6,16 +6,18 @@
 	"scripts": {
 		"dev": "nodemon index.js",
 		"start": "node index.js",
-		"start:auto": "node index.js --auto",
+		"download": "node index.js download",
+		"download:auto": "node index.js download --auto",
 		"rebuild-db": "node index.js rebuild-db",
+		"listen": "node index.js listen",
+		"valid": "node index.js valid",
+		"snapshot": "node index.js snapshot",
+		"export": "node index.js export",
+		"restore": "node index.js restore",
 		"test": "node --test \"tests/**/*.test.js\"",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"format:check": "prettier --check .",
-		"valid": "node validators/index.js",
-		"save-files": "node utils/save_files.js",
-		"export-messages": "node utils/export_messages.js",
-		"restore-quarantine": "node utils/restore_quarantine.js"
+		"format:check": "prettier --check ."
 	},
 	"nodemonConfig": {
 		"ignore": [
@@ -42,13 +44,15 @@
 	"dependencies": {
 		"better-sqlite3": "^11.7.0",
 		"ejs": "^3.1.10",
+		"file-type": "^19.6.0",
 		"inquirer": "^8.2.6",
 		"mime-db": "^1.52.0",
+		"mp4box": "^0.5.4",
 		"telegram": "^2.26.22"
 	},
 	"devDependencies": {
-		"eslint": "^10.2.1",
 		"@eslint/js": "^9.26.0",
+		"eslint": "^10.2.1",
 		"eslint-config-prettier": "^9.1.0",
 		"nodemon": "^3.1.10",
 		"prettier": "^3.8.3"
