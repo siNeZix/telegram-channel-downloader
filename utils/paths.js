@@ -3,23 +3,32 @@ const path = require("path");
 
 const MIN_FREE_BYTES_FOR_DOWNLOAD = 500 * 1024 * 1024; // 500 MB
 
+// Returns free bytes, or null when free space cannot be determined.
+// `null` is distinct from a successful check that returns a number (incl. 0).
 const checkDiskSpace = (targetPath) => {
+	// No statfs API available (older Node): we cannot determine free space.
+	if (typeof fs.statfsSync !== "function") {
+		return null;
+	}
 	try {
 		const resolved = path.resolve(targetPath);
-		let stats;
-		if (fs.statfsSync) {
-			stats = fs.statfsSync(resolved);
-			return stats.bavail * stats.bsize;
-		}
-		// fallback: проверка только для Windows через wmic не делаем, используем try-catch при записи
-		return Infinity;
+		const stats = fs.statfsSync(resolved);
+		return stats.bavail * stats.bsize;
 	} catch (e) {
-		return Infinity;
+		// A real error querying an existing volume — treat as "unknown" rather
+		// than pretending there is infinite space.
+		return null;
 	}
 };
 
 const hasEnoughDiskSpace = (targetPath, requiredBytes = MIN_FREE_BYTES_FOR_DOWNLOAD) => {
 	const free = checkDiskSpace(targetPath);
+	// If we genuinely cannot determine free space, do not block downloads
+	// (the OS write will still fail loudly if the disk is full). Only enforce
+	// the threshold when we have a concrete free-space number.
+	if (free === null) {
+		return true;
+	}
 	return free >= requiredBytes;
 };
 

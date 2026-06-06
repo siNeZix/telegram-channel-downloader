@@ -73,8 +73,12 @@ logger.init();
 
 let client = null;
 let shutdownInProgress = false;
+let listenerTeardown = null;
 
 const shutdown = async (exitCode, reason = null) => {
+	// Re-entrancy guard. Must still return a Promise so callers can safely
+	// chain `.catch()` even when shutdown is already running (otherwise a
+	// second signal/rejection during shutdown would throw `undefined.catch`).
 	if (shutdownInProgress) {
 		return;
 	}
@@ -86,6 +90,15 @@ const shutdown = async (exitCode, reason = null) => {
 	}
 
 	cancelAllDownloads();
+
+	if (typeof listenerTeardown === "function") {
+		try {
+			listenerTeardown();
+		} catch (error) {
+			logger.writeSync("error", `[MAIN] Failed to tear down listener: ${error?.message || String(error)}`);
+		}
+		listenerTeardown = null;
+	}
 
 	if (client && typeof client.disconnect === "function") {
 		try {
@@ -143,19 +156,6 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const { booleanInput, downloadOptionInput, textInput, selectInput } = require("./utils/input_helper");
-
-const downloadableFiles = {
-	webpage: true,
-	poll: true,
-	geo: true,
-	contact: true,
-	venue: true,
-	sticker: true,
-	image: true,
-	video: true,
-	audio: true,
-	pdf: true,
-};
 
 const directRebuildChannelId = (() => {
 	if (args[0] !== "rebuild-db") {
@@ -407,13 +407,11 @@ const autoChannelId = (() => {
 				break;
 
 			case "listen":
-				await startChannelListener(client, null, appPaths);
+				listenerTeardown = await startChannelListener(client, null, appPaths);
 				logMessage.info("Listening for new messages... Press Ctrl+C to stop.");
-				await new Promise((resolve) => {
-					const sigint = () => resolve();
-					process.once("SIGINT", sigint);
-					process.once("SIGTERM", sigint);
-				});
+				// Block here until a signal triggers the global SIGINT/SIGTERM
+				// handler, which runs shutdown() (which calls listenerTeardown).
+				await new Promise(() => {});
 				break;
 
 			case "download_ids":

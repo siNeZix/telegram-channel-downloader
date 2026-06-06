@@ -200,7 +200,11 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 
 		if (Array.isArray(cmd)) {
 			const [bin, ...args] = cmd;
-			const proc = spawn(bin, args, { timeout, windowsHide: true });
+			// Do NOT pass spawn's own `timeout` option: it sends SIGTERM and the
+			// resulting `close` event reports timedOut:false, masking a timeout as
+			// a normal non-zero exit. We manage the timeout ourselves below via
+			// setTimeout + killProcessTree, which labels it correctly.
+			const proc = spawn(bin, args, { windowsHide: true });
 
 			let stdout = "";
 			let stderr = "";
@@ -385,10 +389,14 @@ async function validateVideo(filePath, ffprobeBin) {
 		return validResult({ duration: parseFloat(output) });
 	}
 
+	// ffprobe exited 0 (it parsed the container without error) but did not report
+	// a numeric duration. Some valid media legitimately lack a format duration
+	// (e.g. certain streams/images-as-video). Treat as inconclusive rather than
+	// invalid so we do not falsely quarantine a file ffprobe accepted.
 	log.debug(
-		`validateVideo: invalid (no duration), file=${path.basename(filePath)}, output="${output.substring(0, 50)}"`,
+		`validateVideo: inconclusive (no duration), file=${path.basename(filePath)}, output="${output.substring(0, 50)}"`,
 	);
-	return invalidResult(`ffprobe: no duration found (${output.substring(0, 50)})`);
+	return inconclusiveResult(`ffprobe: no duration found (${output.substring(0, 50)})`);
 }
 
 async function validateVideoDeep(filePath, ffmpegBin) {

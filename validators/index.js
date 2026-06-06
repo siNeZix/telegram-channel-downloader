@@ -632,8 +632,11 @@ function parseArgs() {
 		}
 
 		const optionValue = args[optionIndex + 1];
-		args.splice(optionIndex, optionValue !== undefined ? 2 : 1);
-		return optionValue;
+		// Do not consume the next token if it is itself a flag (starts with "-");
+		// otherwise `--root --deep` would treat `--deep` as the root value.
+		const hasValue = optionValue !== undefined && !optionValue.startsWith("-");
+		args.splice(optionIndex, hasValue ? 2 : 1);
+		return hasValue ? optionValue : undefined;
 	};
 
 	const runtimeOptions = {
@@ -700,7 +703,11 @@ if (require.main === module) {
 		.then((result) => {
 			const logger = require("../utils/logger");
 			logger.close();
-			const exitCode = result && result.totalInvalid > 0 && !options.dryRun ? 1 : 0;
+			// Fail on invalid files (unless dry-run) OR on any errors encountered
+			// during validation/quarantine, so CI does not see green on failures.
+			const hasInvalid = result && result.totalInvalid > 0 && !options.dryRun;
+			const hasErrors = result && result.errors > 0;
+			const exitCode = hasInvalid || hasErrors ? 1 : 0;
 			if (exitCode !== 0) {
 				process.exitCode = exitCode;
 			}

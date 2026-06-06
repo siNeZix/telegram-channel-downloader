@@ -333,7 +333,10 @@ const checkFileExist = (message, outputFolder, channelId = null) => {
 		if (message && cached.fromSnapshot !== undefined) {
 			message._fromSnapshot = cached.fromSnapshot;
 		}
-		return cached.exists && cached.size > 0;
+		// `exists` is the authoritative flag. Entries confirmed via DB/snapshot
+		// are stored with size 0 (size unknown), so we must not require size > 0
+		// here or a confirmed file would flip to "missing" on the second lookup.
+		return cached.exists === true;
 	}
 
 	// 2. DB-based check via preloaded DownloadState

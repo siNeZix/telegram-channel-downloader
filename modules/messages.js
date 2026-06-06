@@ -5,18 +5,11 @@ const db = require("../utils/db");
 const paths = require("../utils/paths");
 const { MessageService } = require("../services/MessageService");
 const { DownloadManager } = require("../services/DownloadManager");
-const { TelegramEntityResolver } = require("../services/TelegramEntityResolver");
+const { getEntityResolver } = require("../services/TelegramEntityResolver");
 const { isFFmpegAvailable, getFFmpegPaths } = require("../validators");
 
 const resolveOutputFolder = (channelId, options = {}) =>
 	options.outputFolder || paths.getChannelExportPath(channelId, options.exportPath);
-
-const getEntityResolver = (client) => {
-	if (!client.__tgdlEntityResolver) {
-		client.__tgdlEntityResolver = new TelegramEntityResolver(client);
-	}
-	return client.__tgdlEntityResolver;
-};
 
 const getLastKnownOffsetId = () => Number(getLastSelection().messageOffsetId || 0);
 
@@ -90,7 +83,7 @@ const getMessages = async (client, channelId, downloadableFiles = {}, options = 
 };
 
 const getMessageDetail = async (client, channelId, messageIds, options = {}) => {
-	const { check: enableCheck = false, deep: deepValidation = false } = options;
+	const { check: enableCheck = false, deep: deepValidation = false, keepDbOpen = false } = options;
 	const outputFolder = resolveOutputFolder(channelId, options);
 	const messageService = new MessageService(client);
 	const downloadManager = new DownloadManager(client);
@@ -144,7 +137,13 @@ const getMessageDetail = async (client, channelId, messageIds, options = {}) => 
 	} finally {
 		downloadManager.cleanup();
 		messageService.cleanup();
-		db.closeDatabase(outputFolder);
+		// In listener mode the per-channel DB is kept open and shared across
+		// many sequential messages; closing it here would clear the prepared
+		// statement cache on every message and could close the handle while a
+		// concurrent write is in flight. The listener closes it on shutdown.
+		if (!keepDbOpen) {
+			db.closeDatabase(outputFolder);
+		}
 	}
 };
 
@@ -165,8 +164,13 @@ const sendMessage = async (client, channelId, message) => {
 // and the leading sign, so listener comparisons match regardless of format.
 const normalizePeerId = (value) => {
 	if (value === null || value === undefined) return null;
-	let str = String(value).replace(/^-/, "");
-	if (str.startsWith("100")) {
+	const raw = String(value);
+	const negative = raw.startsWith("-");
+	let str = negative ? raw.slice(1) : raw;
+	// The "-100" supergroup/channel prefix only appears on the signed bot-API form
+	// (e.g. -1001234567890). Only strip it when the value was negative, so that a
+	// legitimate id that merely starts with the digits "100" is left untouched.
+	if (negative && str.startsWith("100") && str.length > 3) {
 		str = str.slice(3);
 	}
 	return str;
@@ -185,7 +189,13 @@ const handleNewMessage = async (event, client, channelId, options = {}) => {
 		logMessage.dl(`[LISTEN] New message: msgId=${messageId}, hasMedia=${isMedia}`);
 		if (isMedia) {
 			const outputFolder = resolveOutputFolder(channelId, options);
-			await getMessageDetail(client, channelId, [messageId], { ...options, outputFolder });
+			// keepDbOpen: in a long-running listener the per-channel DB is reused
+			// across messages instead of being torn down on every event.
+			await getMessageDetail(client, channelId, [messageId], {
+				...options,
+				outputFolder,
+				keepDbOpen: true,
+			});
 			logMessage.success(`[LISTEN] Downloaded media from new message: ${messageId}`);
 		}
 	} catch (err) {
@@ -193,6 +203,20 @@ const handleNewMessage = async (event, client, channelId, options = {}) => {
 		// handler and tear down the long-running listener.
 		logMessage.error(`[LISTEN] Failed to handle new message: ${err?.message || String(err)}`);
 	}
+};
+
+// Serialize listener event handling per listener so that two media messages
+// arriving close together never run getMessageDetail concurrently against the
+// same per-channel DB (which would risk a close-during-write race).
+const createSerializedHandler = (client, channelId, options) => {
+	let queue = Promise.resolve();
+	return (event) => {
+		queue = queue.then(() => handleNewMessage(event, client, channelId, options));
+		// Swallow here so a rejection never propagates to unhandledRejection;
+		// handleNewMessage already logs its own errors.
+		queue.catch(() => {});
+		return queue;
+	};
 };
 
 // Запуск прослушивания канала в реальном времени
@@ -248,7 +272,21 @@ const startChannelListener = async (client, channelId, options = {}) => {
 	const dialogName = await getDialogName(client, channelId, options);
 	logMessage.success(`[LISTEN] Started listening to: ${dialogName}`);
 
-	client.addEventHandler((event) => handleNewMessage(event, client, channelId, options), new NewMessage({}));
+	const serializedHandler = createSerializedHandler(client, channelId, options);
+	const eventBuilder = new NewMessage({});
+	client.addEventHandler(serializedHandler, eventBuilder);
+
+	// Return a teardown so callers can detach the handler and close the DB
+	// on shutdown instead of leaking the listener.
+	const outputFolder = resolveOutputFolder(channelId, options);
+	return () => {
+		try {
+			client.removeEventHandler(serializedHandler, eventBuilder);
+		} catch (err) {
+			logMessage.error(`[LISTEN] Failed to remove event handler: ${err?.message || String(err)}`);
+		}
+		db.closeDatabase(outputFolder);
+	};
 };
 
 const rebuildDatabaseFromApi = async (client, channelId, options = {}) => {

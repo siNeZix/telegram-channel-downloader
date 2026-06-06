@@ -422,8 +422,6 @@ class ValidationService {
 			return null;
 		}
 
-		await sleep(QUARANTINE_UNLINK_DELAY_MS);
-
 		const target = getQuarantineTarget(this.channelId, filePath, this.outputFolder);
 		paths.ensureDir(target.root);
 
@@ -454,28 +452,44 @@ class ValidationService {
 		}
 
 		if (lastError) {
+			// Rename failed (often a Windows file lock). Fall back to copy+delete,
+			// but guarantee no duplicate is left behind: if the original cannot be
+			// removed after copying, we delete the quarantine copy and report
+			// failure, leaving exactly one (live) copy on disk.
+			let copied = false;
 			try {
 				fs.copyFileSync(filePath, target.filePath);
-				lastError = null;
+				copied = true;
+
+				let unlinked = false;
 				for (let attempt = 1; attempt <= QUARANTINE_UNLINK_ATTEMPTS; attempt++) {
 					try {
 						fs.unlinkSync(filePath);
+						unlinked = true;
 						break;
 					} catch (unlinkError) {
+						lastError = unlinkError;
 						if (attempt === QUARANTINE_UNLINK_ATTEMPTS) {
-							throw unlinkError;
+							break;
 						}
 						await sleep(QUARANTINE_UNLINK_DELAY_MS);
 					}
 				}
+
+				if (unlinked) {
+					lastError = null;
+				}
 			} catch (copyError) {
 				lastError = copyError;
-				if (fs.existsSync(target.filePath)) {
-					try {
-						fs.unlinkSync(target.filePath);
-					} catch {
-						// best effort cleanup
-					}
+			}
+
+			// If we ended up failing (copy failed, or original still present),
+			// remove the quarantine copy so we never duplicate the file.
+			if (lastError && copied && fs.existsSync(target.filePath) && fs.existsSync(filePath)) {
+				try {
+					fs.unlinkSync(target.filePath);
+				} catch {
+					// best effort cleanup
 				}
 			}
 		}

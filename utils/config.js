@@ -32,7 +32,7 @@ const DEFAULTS = {
 		checkProgressIntervalFiles: 100,
 		validationProfile: "sampled",
 		quarantineInvalidFiles: true,
-		trustSnapshotsForValidation: true,
+		trustSnapshotsForValidation: false,
 	},
 	logging: {
 		progressLogIntervalSeconds: 5,

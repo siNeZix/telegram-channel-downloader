@@ -40,7 +40,6 @@ class ProgressLogger {
 		this.maxParallel = options.maxParallel || 20;
 		this.channelId = options.channelId || null;
 		this.totalBytesDownloaded = 0;
-		this._lastMilestonePercent = 0;
 		this._lastDownloadLogSnapshot = null;
 	}
 
@@ -141,7 +140,6 @@ class ProgressLogger {
 		this.failedDownloads = 0;
 		this.activeDownloads = 0;
 		this.totalBytesDownloaded = 0;
-		this._lastMilestonePercent = 0;
 	}
 
 	static logCheckProgress(checked, total, skipped, newFiles, startedAt, channelId = null) {

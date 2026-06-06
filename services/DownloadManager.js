@@ -13,11 +13,10 @@ const {
 	fileCheckCache,
 	logMessage,
 	downloadState,
-	initDownloadState,
 } = require("../utils/helper");
-const { createFloodState, isFileReferenceExpired: isFileRefExpired } = require("./FloodControl");
+const { isFileReferenceExpired: isFileRefExpired } = require("./FloodControl");
 const { ProgressLogger } = require("./ProgressLogger");
-const { TelegramEntityResolver } = require("./TelegramEntityResolver");
+const { getEntityResolver } = require("./TelegramEntityResolver");
 const { ValidationService } = require("./ValidationService");
 const { hasEnoughDiskSpace } = require("../utils/paths");
 
@@ -66,7 +65,7 @@ class DownloadManager {
 		this.client = client;
 		this.activeDownloads = new Set();
 		this.activePartialPaths = new Set();
-		this.entityResolver = new TelegramEntityResolver(client);
+		this.entityResolver = client ? getEntityResolver(client) : null;
 		this._cancelled = false;
 		activeManagers.add(this);
 		logMessage.dl(`[DL] DownloadManager created, client type: ${typeof client}`);
@@ -799,121 +798,6 @@ class DownloadManager {
 	}
 }
 
-/**
- * Скачать сообщения по ID
- */
-const downloadMessagesByIds = async (client, channelId, messageIds, downloadableFiles = {}, options = {}) => {
-	const manager = new DownloadManager(client);
-	const floodState = createFloodState();
-	try {
-		logMessage.dl(`[DL] downloadMessagesByIds: channelId=${channelId}, ids=${JSON.stringify(messageIds)}`);
-		const outputFolder = options.outputFolder || paths.getChannelExportPath(channelId);
-		paths.ensureDir(outputFolder);
-
-		db.initDatabase(channelId, outputFolder);
-		initDownloadState(channelId, outputFolder);
-
-		const deepValidation = !!options.deepValidation;
-		const ffmpegPaths = options.ffmpegPaths || null;
-		manager.channelId = channelId;
-		manager.outputFolder = outputFolder;
-		manager.deepValidation = deepValidation;
-		manager.ffmpegPaths = ffmpegPaths;
-
-		logMessage.dl(`[DL] Fetching messages by IDs: ${JSON.stringify(messageIds)}`);
-		const inputPeer = await manager.entityResolver.resolve(channelId);
-		const messages = await manager.client.getMessages(inputPeer, { ids: messageIds });
-		logMessage.dl(`[DL] getMessages returned ${messages.length} messages`);
-
-		let totalFilesToDownload = 0;
-		let successfulDownloads = 0;
-		let failedDownloads = 0;
-		let skippedExisting = 0;
-		let totalBytesDownloaded = 0;
-
-		const progressLogger = new ProgressLogger({
-			maxParallel: floodState.getParallelLimit(),
-		});
-
-		// Подсчет и проверка файлов
-		logMessage.dl(`[DL] Checking ${messages.length} messages for media`);
-		for (const message of messages) {
-			if (message.media) {
-				const mediaPath = getMediaPath(message, outputFolder);
-				let fileExist = checkFileExist(message, outputFolder, channelId);
-
-				if (!fileExist) {
-					totalFilesToDownload++;
-					logMessage.dl(`[DL] Need download: msgId=${message.id}, file=${path.basename(mediaPath)}`);
-				} else {
-					skippedExisting++;
-					logMessage.cache(`[CACHE] File exists: ${path.basename(mediaPath)} (skipped)`);
-				}
-			}
-		}
-
-		// Скачивание
-		logMessage.dl(`[DL] Starting downloads: ${totalFilesToDownload} new files`);
-		for (const message of messages) {
-			if (message.media) {
-				const mediaPath = getMediaPath(message, outputFolder);
-				const fileExist = checkFileExist(message, outputFolder, channelId);
-
-				if (fileExist) {
-					logMessage.cache(`[CACHE] Skipping existing: msgId=${message.id}`);
-					continue;
-				}
-
-				logMessage.dl(`[DL] Queueing: msgId=${message.id}, file=${path.basename(mediaPath)}`);
-
-				const downloadPromise = manager
-					.downloadMedia(message, mediaPath, floodState, channelId, outputFolder, ffmpegPaths, deepValidation)
-					.then((result) => {
-						if (result.success) {
-							successfulDownloads++;
-							totalBytesDownloaded += result.fileSize;
-							addFileToCheckCache(mediaPath, result.fileSize);
-						} else {
-							failedDownloads++;
-						}
-					})
-					.finally(() => {
-						manager.activeDownloads.delete(downloadPromise);
-					});
-
-				manager.activeDownloads.add(downloadPromise);
-			}
-
-			if (manager.activeDownloads.size >= floodState.getParallelLimit()) {
-				logMessage.dl(`[DL] Queue full, waiting for free slot`);
-				if (manager.activeDownloads.size > 0) {
-					try {
-						await Promise.race(manager.activeDownloads);
-					} catch (err) {
-						logMessage.error(`[DL] Download slot promise rejected: ${err?.message || err}`);
-					}
-				}
-			}
-		}
-
-		if (manager.activeDownloads.size > 0) {
-			logMessage.info("[DL] Waiting for files to be downloaded");
-			await Promise.all([...manager.activeDownloads]);
-			logMessage.success("[DL] Files downloaded successfully");
-		}
-
-		logMessage.info(`[SUMMARY] Skipped existing: ${skippedExisting}`);
-
-		return true;
-	} catch (error) {
-		logMessage.error(`[DL] Error downloading messages by IDs: ${error.message}`);
-		return false;
-	} finally {
-		manager.cleanup();
-		floodState.cleanup();
-	}
-};
-
 function cancelAllDownloads() {
 	let totalCleaned = 0;
 	for (const manager of activeManagers) {
@@ -929,7 +813,6 @@ function cancelAllDownloads() {
 
 module.exports = {
 	DownloadManager,
-	downloadMessagesByIds,
 	isRetryableValidationError,
 	shouldRetryDownload,
 	cancelAllDownloads,

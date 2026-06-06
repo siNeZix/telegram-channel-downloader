@@ -14,10 +14,26 @@ const {
 	initDownloadState,
 } = require("../utils/helper");
 const { createFloodState } = require("./FloodControl");
-const { TelegramEntityResolver } = require("./TelegramEntityResolver");
+const { getEntityResolver } = require("./TelegramEntityResolver");
 const { isFFmpegAvailable, getFFmpegPaths } = require("../validators");
 
 const CHECK_PROGRESS_INTERVAL_MS = 5000;
+
+/**
+ * Возвращает id последнего сообщения в пачке, у которого есть числовой id.
+ * Используется для продвижения offsetId при пагинации, чтобы пропуск
+ * сервисных/пустых сообщений без id не приводил к бесконечному циклу.
+ * @returns {number|null}
+ */
+const findLastMessageId = (messages) => {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const id = messages[i]?.id;
+		if (typeof id === "number" && Number.isFinite(id)) {
+			return id;
+		}
+	}
+	return null;
+};
 
 /**
  * Сервис для получения сообщений из Telegram API
@@ -26,7 +42,7 @@ class MessageService {
 	constructor(client) {
 		this.client = client;
 		this.floodState = createFloodState();
-		this.entityResolver = new TelegramEntityResolver(client);
+		this.entityResolver = getEntityResolver(client);
 	}
 
 	/**
@@ -143,6 +159,17 @@ class MessageService {
 				break;
 			}
 
+			// Determine the next offset from the last message that actually has an id.
+			// Service/empty messages may lack `.id`; without this guard offsetId could
+			// become undefined and restart pagination from the head → infinite loop.
+			const nextOffsetId = findLastMessageId(messages);
+			if (nextOffsetId === null || nextOffsetId === offsetId) {
+				logMessage.warn(
+					`[FETCH] Pagination did not advance (offsetId=${offsetId}); stopping to avoid an infinite loop.`,
+				);
+				break;
+			}
+
 			// Callback для обработки пачки
 			if (onBatch) {
 				await onBatch(messages, {
@@ -152,11 +179,11 @@ class MessageService {
 					deepValidation,
 					floodState: this.floodState,
 					stats,
-					nextOffsetId: messages[messages.length - 1]?.id || offsetId,
+					nextOffsetId,
 				});
 			}
 
-			offsetId = messages[messages.length - 1].id;
+			offsetId = nextOffsetId;
 		}
 
 		return stats;
@@ -236,7 +263,14 @@ class MessageService {
 				`[DB-REBUILD] Progress: fetched=${totalFetched}/${messages.total || totalFetched} (${percent}%), stored=${totalStored}, media=${totalMediaFound}`,
 			);
 
-			offsetId = messages[messages.length - 1].id;
+			const nextOffsetId = findLastMessageId(messages);
+			if (nextOffsetId === null || nextOffsetId === offsetId) {
+				logMessage.warn(
+					`[DB-REBUILD] Pagination did not advance (offsetId=${offsetId}); stopping to avoid an infinite loop.`,
+				);
+				break;
+			}
+			offsetId = nextOffsetId;
 		}
 
 		return {
