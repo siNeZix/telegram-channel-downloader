@@ -59,6 +59,7 @@ function classifyFFmpegErrors(stderr, stdout) {
 
 	const fatalErrors = [];
 	const nonFatalErrors = [];
+	const unknownErrors = [];
 
 	for (const line of lines) {
 		const trimmed = line.trim();
@@ -83,11 +84,23 @@ function classifyFFmpegErrors(stderr, stdout) {
 			}
 		}
 		if (!isFatal && !isNonFatal && trimmed.length > 0) {
-			fatalErrors.push(trimmed);
+			unknownErrors.push(trimmed);
 		}
 	}
 
-	return { fatalErrors, nonFatalErrors };
+	return { fatalErrors, nonFatalErrors, unknownErrors };
+}
+
+function validResult(extra = {}) {
+	return { valid: true, status: "valid", error: null, ...extra };
+}
+
+function invalidResult(error, extra = {}) {
+	return { valid: false, status: "invalid", error, ...extra };
+}
+
+function inconclusiveResult(error, extra = {}) {
+	return { valid: null, status: "inconclusive", error, ...extra };
 }
 
 function getScaledTimeout(filePath, baseTimeout) {
@@ -97,7 +110,7 @@ function getScaledTimeout(filePath, baseTimeout) {
 		if (sizeMB > SIZE_BASED_TIMEOUT_MB) {
 			return baseTimeout + Math.ceil(sizeMB - SIZE_BASED_TIMEOUT_MB) * TIMEOUT_PER_MB_MS;
 		}
-	} catch (e) {
+	} catch {
 		/* use base */
 	}
 	return baseTimeout;
@@ -123,7 +136,7 @@ const log = {
  * Kept only for backward compatibility with external consumers.
  */
 function escapePathForCmd(filePath) {
-	let escaped = filePath.replace(/'/g, "''");
+	const escaped = filePath.replace(/'/g, "''");
 	return `"${escaped}"`;
 }
 
@@ -259,7 +272,7 @@ function execPromise(cmd, timeout = VALIDATION_TIMEOUT) {
 					const { spawn } = require("child_process");
 					const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
 					killer.on("error", () => {});
-				} catch (e) {
+				} catch {
 					/* best effort on Windows */
 				}
 			} else {
@@ -281,31 +294,32 @@ async function validateImage(filePath, ffmpegBin) {
 
 	if (result.exitCode === 0) {
 		log.debug(`validateImage: valid, file=${path.basename(filePath)}`);
-		return { valid: true, error: null };
+		return validResult();
 	}
 
 	if (result.timedOut) {
-		log.debug(`validateImage: timeout (treating as valid), file=${path.basename(filePath)}`);
-		return { valid: true, error: null, timedOut: true };
+		log.debug(`validateImage: timeout (inconclusive), file=${path.basename(filePath)}`);
+		return inconclusiveResult("ffmpeg image validation timed out", { timedOut: true });
 	}
 
-	const { fatalErrors, nonFatalErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
+	const { fatalErrors, nonFatalErrors, unknownErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
 
 	if (fatalErrors.length === 0 && nonFatalErrors.length > 0) {
 		log.debug(
 			`validateImage: non-fatal errors only, treating as valid, file=${path.basename(filePath)}, nonFatal=${nonFatalErrors.length}`,
 		);
-		return { valid: true, error: null };
+		return validResult();
 	}
 
 	if (fatalErrors.length === 0) {
-		log.debug(`validateImage: no classified errors, treating as valid, file=${path.basename(filePath)}`);
-		return { valid: true, error: null };
+		const unknownMsg = unknownErrors.join("; ").substring(0, 200) || `ffmpeg exit code ${result.exitCode}`;
+		log.debug(`validateImage: inconclusive, file=${path.basename(filePath)}, error=${unknownMsg}`);
+		return inconclusiveResult(`ffmpeg image inconclusive: ${unknownMsg}`, { unknownErrors });
 	}
 
 	const errorMsg = fatalErrors.join("; ").substring(0, 200);
 	log.debug(`validateImage: invalid, file=${path.basename(filePath)}, error=${errorMsg}`);
-	return { valid: false, error: `ffmpeg: ${errorMsg}` };
+	return invalidResult(`ffmpeg: ${errorMsg}`, { fatalErrors, nonFatalErrors, unknownErrors });
 }
 
 async function validateVideo(filePath, ffprobeBin) {
@@ -329,11 +343,16 @@ async function validateVideo(filePath, ffprobeBin) {
 
 	if (result.exitCode !== 0) {
 		if (result.timedOut) {
-			log.debug(`validateVideo: timed out (treating as valid), file=${path.basename(filePath)}`);
-			return { valid: true, error: null, timedOut: true };
+			log.debug(`validateVideo: timed out (inconclusive), file=${path.basename(filePath)}`);
+			return inconclusiveResult("ffprobe validation timed out", { timedOut: true });
+		}
+		const { fatalErrors, nonFatalErrors, unknownErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
+		if (fatalErrors.length > 0) {
+			const errorMsg = fatalErrors.join("; ").substring(0, 200);
+			return invalidResult(`ffprobe: ${errorMsg}`, { fatalErrors, nonFatalErrors, unknownErrors });
 		}
 		log.debug(`validateVideo: invalid (exit code), file=${path.basename(filePath)}, exitCode=${result.exitCode}`);
-		return { valid: false, error: `ffprobe exit code ${result.exitCode}` };
+		return inconclusiveResult(`ffprobe exit code ${result.exitCode}`, { nonFatalErrors, unknownErrors });
 	}
 
 	const output = result.stdout.trim();
@@ -341,13 +360,13 @@ async function validateVideo(filePath, ffprobeBin) {
 
 	if (output && !isNaN(parseFloat(output))) {
 		log.debug(`validateVideo: valid, file=${path.basename(filePath)}, duration=${output}`);
-		return { valid: true, error: null, duration: parseFloat(output) };
+		return validResult({ duration: parseFloat(output) });
 	}
 
 	log.debug(
 		`validateVideo: invalid (no duration), file=${path.basename(filePath)}, output="${output.substring(0, 50)}"`,
 	);
-	return { valid: false, error: `ffprobe: no duration found (${output.substring(0, 50)})` };
+	return invalidResult(`ffprobe: no duration found (${output.substring(0, 50)})`);
 }
 
 async function validateVideoDeep(filePath, ffmpegBin) {
@@ -362,32 +381,34 @@ async function validateVideoDeep(filePath, ffmpegBin) {
 
 	if (result.exitCode === 0) {
 		log.debug(`validateVideoDeep: valid (deep), file=${path.basename(filePath)}`);
-		return { valid: true, error: null };
+		return validResult();
 	}
 
 	if (result.timedOut) {
-		log.debug(`validateVideoDeep: timed out (treating as inconclusive/valid), file=${path.basename(filePath)}`);
-		return { valid: true, error: null, timedOut: true };
+		log.debug(`validateVideoDeep: timed out (inconclusive), file=${path.basename(filePath)}`);
+		return inconclusiveResult("ffmpeg deep decode timed out", { timedOut: true });
 	}
 
-	const { fatalErrors, nonFatalErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
+	const { fatalErrors, nonFatalErrors, unknownErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
 
 	if (fatalErrors.length === 0) {
 		if (nonFatalErrors.length > 0) {
 			log.debug(
 				`validateVideoDeep: non-fatal errors only, treating as valid, file=${path.basename(filePath)}, nonFatal=${nonFatalErrors.length}`,
 			);
-			return { valid: true, error: null };
+			return validResult({ nonFatalErrors });
 		}
 		log.debug(
-			`validateVideoDeep: no classified errors but non-zero exit, treating as valid, file=${path.basename(filePath)}`,
+			`validateVideoDeep: no classified errors but non-zero exit, inconclusive, file=${path.basename(filePath)}`,
 		);
-		return { valid: true, error: null };
+		const unknownMsg =
+			unknownErrors.join("; ").substring(0, 200) || "ffmpeg deep decode exited without classified errors";
+		return inconclusiveResult(`ffmpeg decode inconclusive: ${unknownMsg}`, { unknownErrors });
 	}
 
 	const errorMsg = fatalErrors.join("; ").substring(0, 200);
 	log.debug(`validateVideoDeep: invalid (deep), file=${path.basename(filePath)}, error=${errorMsg}`);
-	return { valid: false, error: `ffmpeg decode: ${errorMsg}` };
+	return invalidResult(`ffmpeg decode: ${errorMsg}`, { fatalErrors, nonFatalErrors, unknownErrors });
 }
 
 async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false) {
@@ -395,7 +416,7 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false)
 
 	if (!fs.existsSync(filePath)) {
 		log.debug(`validateFile: file does not exist: ${filePath}`);
-		return { valid: false, error: "File does not exist" };
+		return invalidResult("File does not exist");
 	}
 
 	try {
@@ -404,11 +425,11 @@ async function validateFile(filePath, type, ffmpegBin, ffprobeBin, deep = false)
 
 		if (stats.size === 0) {
 			log.debug(`validateFile: file is empty: ${filePath}`);
-			return { valid: false, error: "File is empty" };
+			return invalidResult("File is empty");
 		}
 	} catch (err) {
 		log.error(`validateFile: cannot stat file ${filePath}: ${err.message}`);
-		return { valid: false, error: "Cannot stat file" };
+		return inconclusiveResult("Cannot stat file");
 	}
 
 	if (type === "image") {
@@ -493,6 +514,9 @@ module.exports = {
 	validateImage,
 	validateVideo,
 	validateVideoDeep,
+	validResult,
+	invalidResult,
+	inconclusiveResult,
 	escapePathForCmd,
 	classifyFFmpegErrors,
 	getScaledTimeout,

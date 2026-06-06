@@ -12,6 +12,13 @@ const SUPPORTED_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS, 
 const IGNORED_DIRS = new Set(["node_modules", ".git", "snapshots", "quarantine"]);
 const IGNORED_EXTENSIONS = new Set(["json", "txt", "html", "css", "js"]);
 
+function getTypeByExtension(ext) {
+	if (IMAGE_EXTENSIONS.has(ext)) return "image";
+	if (VIDEO_EXTENSIONS.has(ext)) return "video";
+	if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+	return "unknown";
+}
+
 /**
  * Recursively scan directory for media files
  * @param {string} dirPath - Directory to scan
@@ -55,9 +62,9 @@ function scanDirectory(dirPath, basePath = dirPath) {
 					relativePath: relativePath,
 					extension: ext,
 					size: stats.size,
-					type: IMAGE_EXTENSIONS.has(ext) ? "image" : "video",
+					type: getTypeByExtension(ext),
 				});
-			} catch (err) {
+			} catch {
 				// Skip files we can't stat
 			}
 		}
@@ -100,9 +107,9 @@ function scanExportDirectory(exportPath) {
 						relativePath: entry.name,
 						extension: ext,
 						size: stats.size,
-						type: IMAGE_EXTENSIONS.has(ext) ? "image" : "video",
+						type: getTypeByExtension(ext),
 					});
-				} catch (err) {
+				} catch {
 					// Skip
 				}
 			}
@@ -126,6 +133,10 @@ function getImageExtensions() {
  */
 function getVideoExtensions() {
 	return Array.from(VIDEO_EXTENSIONS);
+}
+
+function getAudioExtensions() {
+	return Array.from(AUDIO_EXTENSIONS);
 }
 
 /**
@@ -154,9 +165,12 @@ module.exports = {
 	scanDirectory,
 	getImageExtensions,
 	getVideoExtensions,
+	getAudioExtensions,
 	getSupportedExtensions,
 	filterByType,
+	getTypeByExtension,
 	IMAGE_EXTENSIONS,
 	VIDEO_EXTENSIONS,
+	AUDIO_EXTENSIONS,
 	IGNORED_DIRS,
 };

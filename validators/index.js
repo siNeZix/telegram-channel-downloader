@@ -27,19 +27,6 @@ const log = {
 };
 
 /**
- * Format bytes to human readable
- * @param {number} bytes
- * @returns {string}
- */
-function formatBytes(bytes) {
-	if (bytes === 0) return "0 B";
-	const k = 1024;
-	const sizes = ["B", "KB", "MB", "GB"];
-	const i = Math.floor(Math.log(bytes) / Math.log(k));
-	return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
-}
-
-/**
  * Format duration in seconds to mm:ss
  * @param {number} seconds
  * @returns {string}
@@ -90,25 +77,29 @@ function extractChannelIdFromPath(filePath, exportPath) {
 	return parts.length > 0 ? parts[0] : null;
 }
 
-/**
- * Delete a file
- * @param {string} filePath
- * @returns {boolean}
- */
-function deleteFile(filePath) {
-	try {
-		fs.unlinkSync(filePath);
-		logMessage.valid(`[VALID] Deleted file: ${filePath}`);
-		return true;
-	} catch (err) {
-		logMessage.error(`[VALID] Failed to delete ${filePath}: ${err.message}`);
-		return false;
-	}
-}
-
 async function quarantineFile(channelId, outputFolder, filePath, reason, metadata = {}) {
 	const validationService = new ValidationService({ channelId, outputFolder, ffmpegPaths: null });
 	return validationService.quarantineFile(filePath, reason, metadata);
+}
+
+function buildQuarantineMetadata(file, validationResult, extra = {}) {
+	return {
+		relativePath: file.relativePath,
+		size: file.size,
+		mediaType: file.type,
+		extension: file.extension,
+		validation: {
+			status: validationResult?.status || "invalid",
+			profile: validationResult?.profile || null,
+			fileType: validationResult?.fileType || null,
+			error: validationResult?.error || null,
+			timedOut: !!validationResult?.timedOut,
+			fatalErrors: validationResult?.fatalErrors || [],
+			nonFatalErrors: validationResult?.nonFatalErrors || [],
+			unknownErrors: validationResult?.unknownErrors || [],
+		},
+		...extra,
+	};
 }
 
 /**
@@ -128,25 +119,27 @@ async function runValidation(options = {}) {
 		exportPath = paths.export,
 		type = "all",
 		deep = false,
+		strict = false,
 		ignoreSnapshots = false,
 		cache = false,
 	} = options;
 
 	logMessage.valid(
-		`=== Starting file validation: dryRun=${dryRun}, verbose=${verbose}, type=${type}, deep=${deep}, cache=${cache}, exportPath=${exportPath} ===`,
+		`=== Starting file validation: dryRun=${dryRun}, verbose=${verbose}, type=${type}, deep=${deep}, strict=${strict}, cache=${cache}, exportPath=${exportPath} ===`,
 	);
 
 	const startTime = Date.now();
 	let totalScanned = 0;
 	let totalValid = 0;
 	let totalInvalid = 0;
+	let totalInconclusive = 0;
 	let totalDeleted = 0;
 	let totalSkipped = 0;
 	let totalErrors = 0;
 	let totalDbConfirmed = 0;
 	let totalDbMissing = 0;
 	let totalDbRecovered = 0;
-	let deletedEntries = [];
+	const deletedEntries = [];
 
 	log.info(`Starting file validation...`);
 	if (dryRun) {
@@ -154,7 +147,7 @@ async function runValidation(options = {}) {
 	}
 	if (cache) {
 		log.info(`CACHE MODE: Checking files against database...`);
-		if (deep) {
+		if (deep || strict) {
 			log.info(`DEEP VALIDATION: Will attempt to recover missing files`);
 		}
 	}
@@ -301,13 +294,14 @@ async function runValidation(options = {}) {
 				totalDbMissing++;
 				logMessage.warn(`[CACHE] DB missing: ${file.relativePath} (not marked as downloaded)`);
 
-				if (deep && fs.existsSync(file.path)) {
+				if ((deep || strict) && fs.existsSync(file.path)) {
 					// DEEP mode: try to validate with FFmpeg
 					logMessage.info(`[CACHE] Running deep validation for: ${file.relativePath}`);
 
 					const expectedSize = db.getExpectedSize(channelId, outputFolder, messageId);
 					const validationResult = await validationService.validateMediaFile(file.path, file.type, {
 						deepValidation: true,
+						profile: strict ? "strict" : null,
 						expectedSize,
 					});
 
@@ -317,10 +311,18 @@ async function runValidation(options = {}) {
 						db.setFileDownloaded(channelId, outputFolder, messageId, 1);
 						db.setValidationState(channelId, outputFolder, messageId, {
 							status: "verified",
-							profile: "full",
+							profile: validationResult.profile || (strict ? "strict" : "full"),
 							error: null,
 						});
 						totalDbRecovered++;
+					} else if (validationResult.status === "inconclusive") {
+						logMessage.warn(`[CACHE] File validation inconclusive, keeping in place: ${file.relativePath}`);
+						db.setValidationState(channelId, outputFolder, messageId, {
+							status: "inconclusive",
+							profile: validationResult.profile,
+							error: validationResult.error,
+						});
+						totalInconclusive++;
 					} else {
 						// File is corrupt - delete it
 						logMessage.warn(`[CACHE] File failed validation, quarantining: ${file.relativePath}`);
@@ -332,10 +334,7 @@ async function runValidation(options = {}) {
 								outputFolder,
 								file.path,
 								"not in DB + deep validation failed",
-								{
-									relativePath: file.relativePath,
-									size: file.size,
-								},
+								buildQuarantineMetadata(file, validationResult),
 							);
 							if (quarantined?.ok) {
 								totalDeleted++;
@@ -359,6 +358,7 @@ async function runValidation(options = {}) {
 
 						const ffprobeCheck = await validationService.validateMediaFile(file.path, file.type, {
 							deepValidation: false,
+							profile: strict ? "strict" : null,
 							expectedSize: db.getExpectedSize(channelId, outputFolder, messageId),
 						});
 
@@ -371,6 +371,16 @@ async function runValidation(options = {}) {
 								error: null,
 							});
 							totalDbRecovered++;
+						} else if (ffprobeCheck.status === "inconclusive") {
+							logMessage.warn(
+								`[CACHE] File validation inconclusive, keeping in place: ${file.relativePath}`,
+							);
+							db.setValidationState(channelId, outputFolder, messageId, {
+								status: "inconclusive",
+								profile: ffprobeCheck.profile,
+								error: ffprobeCheck.error,
+							});
+							totalInconclusive++;
 						} else {
 							logMessage.warn(
 								`[CACHE] File not in DB and ffprobe failed, quarantining: ${file.relativePath}`,
@@ -383,10 +393,7 @@ async function runValidation(options = {}) {
 									outputFolder,
 									file.path,
 									`not in DB + ${ffprobeCheck.error}`,
-									{
-										relativePath: file.relativePath,
-										size: file.size,
-									},
+									buildQuarantineMetadata(file, ffprobeCheck),
 								);
 								if (quarantined?.ok) {
 									totalDeleted++;
@@ -423,6 +430,7 @@ async function runValidation(options = {}) {
 			(totalSkipped > 0 ? `Skipped:       ${totalSkipped} files (from snapshots)\n` : "") +
 			`DB Confirmed:  ${totalDbConfirmed} files\n` +
 			`DB Missing:     ${totalDbMissing} files\n` +
+			(totalInconclusive > 0 ? `Inconclusive:   ${totalInconclusive} files (kept in place)\n` : "") +
 			(deep ? `DB Recovered:   ${totalDbRecovered} files (validated and updated)\n` : "") +
 			`Quarantined:   ${totalDeleted} files\n` +
 			(dryRun ? `DRY-RUN: No files were actually deleted\n` : "") +
@@ -431,13 +439,14 @@ async function runValidation(options = {}) {
 		logMessage.info(infoLine);
 
 		logMessage.valid(
-			`=== Cache summary: total=${totalScanned}, skipped=${totalSkipped}, dbConfirmed=${totalDbConfirmed}, dbMissing=${totalDbMissing}, dbRecovered=${totalDbRecovered}, deleted=${totalDeleted} ===`,
+			`=== Cache summary: total=${totalScanned}, skipped=${totalSkipped}, dbConfirmed=${totalDbConfirmed}, dbMissing=${totalDbMissing}, dbRecovered=${totalDbRecovered}, inconclusive=${totalInconclusive}, deleted=${totalDeleted}, durationMs=${cacheTime} ===`,
 		);
 
 		return {
 			totalScanned,
 			totalValid: totalDbConfirmed,
 			totalInvalid: totalDbMissing,
+			totalInconclusive,
 			totalDeleted,
 			totalSkipped,
 			totalDbConfirmed,
@@ -483,6 +492,7 @@ async function runValidation(options = {}) {
 					channelId && messageId ? db.getExpectedSize(channelId, outputFolder, messageId) : null;
 				const result = await validationService.validateMediaFile(file.path, file.type, {
 					deepValidation: deep,
+					profile: strict ? "strict" : null,
 					expectedSize,
 				});
 
@@ -498,6 +508,18 @@ async function runValidation(options = {}) {
 					if (verbose) {
 						log.success(`Valid: ${file.relativePath}`);
 					}
+				} else if (result.status === "inconclusive") {
+					totalInconclusive++;
+					if (channelId && messageId && outputFolder) {
+						db.setValidationState(channelId, outputFolder, messageId, {
+							status: "inconclusive",
+							profile: result.profile,
+							error: result.error,
+						});
+					}
+					if (verbose) {
+						log.warn(`Inconclusive: ${file.relativePath} - ${result.error}`);
+					}
 				} else {
 					totalInvalid++;
 					if (dryRun) {
@@ -510,10 +532,7 @@ async function runValidation(options = {}) {
 							quarantineOutputFolder,
 							file.path,
 							result.error || "validation failed",
-							{
-								relativePath: file.relativePath,
-								size: file.size,
-							},
+							buildQuarantineMetadata(file, result),
 						);
 						if (quarantined?.ok) {
 							totalDeleted++;
@@ -564,6 +583,7 @@ async function runValidation(options = {}) {
 		...(totalSkipped > 0 ? [`Skipped:  ${totalSkipped} files (from snapshots)`] : []),
 		`Valid:   ${totalValid} files`,
 		`Invalid: ${totalInvalid} files`,
+		...(totalInconclusive > 0 ? [`Inconclusive: ${totalInconclusive} files (kept in place)`] : []),
 		...(dryRun ? [`Would quarantine: ${totalInvalid} files`] : [`Quarantined: ${totalDeleted} files`]),
 		`Errors:  ${totalErrors}`,
 		`Duration: ${formatDuration((Date.now() - startTime) / 1000)}`,
@@ -574,13 +594,14 @@ async function runValidation(options = {}) {
 	}
 
 	logMessage.valid(
-		`=== Validation summary: total=${totalScanned}, valid=${totalValid}, invalid=${totalInvalid}, skipped=${totalSkipped}, deleted=${totalDeleted}, errors=${totalErrors}, duration=${formatDuration((Date.now() - startTime) / 1000)} ===`,
+		`=== Validation summary: total=${totalScanned}, valid=${totalValid}, invalid=${totalInvalid}, inconclusive=${totalInconclusive}, skipped=${totalSkipped}, deleted=${totalDeleted}, errors=${totalErrors}, duration=${formatDuration((Date.now() - startTime) / 1000)} ===`,
 	);
 
 	return {
 		totalScanned,
 		totalValid,
 		totalInvalid,
+		totalInconclusive,
 		totalDeleted,
 		totalSkipped,
 		errors: totalErrors,
@@ -617,6 +638,7 @@ function parseArgs() {
 		verbose: false,
 		type: "all",
 		deep: false,
+		strict: false,
 		ignoreSnapshots: false,
 		cache: false,
 	};
@@ -631,7 +653,12 @@ function parseArgs() {
 			options.type = "image";
 		} else if (arg === "--videos" || arg === "-V") {
 			options.type = "video";
+		} else if (arg === "--audio" || arg === "-A") {
+			options.type = "audio";
 		} else if (arg === "--deep" || arg === "-D") {
+			options.deep = true;
+		} else if (arg === "--strict") {
+			options.strict = true;
 			options.deep = true;
 		} else if (arg === "--ignore-snapshots" || arg === "-S") {
 			options.ignoreSnapshots = true;

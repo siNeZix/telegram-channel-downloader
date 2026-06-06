@@ -11,6 +11,9 @@ const {
 	execPromise,
 	classifyFFmpegErrors,
 	getScaledTimeout,
+	validResult,
+	invalidResult,
+	inconclusiveResult,
 	SAMPLE_DECODE_TIMEOUT,
 	TAIL_DECODE_TIMEOUT,
 	VALIDATION_TIMEOUT,
@@ -29,7 +32,7 @@ const QUARANTINE_UNLINK_ATTEMPTS = IS_WINDOWS ? 8 : 5;
 
 function getValidationProfile({ deepValidation = false, mediaType = "", explicitProfile = null } = {}) {
 	if (explicitProfile) {
-		return explicitProfile;
+		return explicitProfile.trim().toLowerCase();
 	}
 
 	if (deepValidation) {
@@ -46,6 +49,13 @@ function getValidationProfile({ deepValidation = false, mediaType = "", explicit
 	}
 
 	return DEFAULT_VIDEO_PROFILE;
+}
+
+function getMediaFileType(mediaType) {
+	const normalizedType = String(mediaType || "").toLowerCase();
+	if (normalizedType.includes("video")) return "video";
+	if (normalizedType.includes("audio")) return "audio";
+	return "image";
 }
 
 function getQuarantineTarget(channelId, filePath, outputFolder = null) {
@@ -66,14 +76,14 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	if (!probeResult.valid) {
 		if (probeResult.timedOut) {
 			logMessage.valid(`[VALID] Sampled: ffprobe timed out, treating as valid: ${path.basename(filePath)}`);
-			return { valid: true, error: null, profile: "sampled" };
+			return inconclusiveResult("ffprobe validation timed out", { profile: "sampled" });
 		}
 		return probeResult;
 	}
 
 	const duration = probeResult.duration;
 	if (!Number.isFinite(duration) || duration <= 0) {
-		return { valid: false, error: "ffprobe: invalid duration for sampled validation" };
+		return invalidResult("ffprobe: invalid duration for sampled validation");
 	}
 
 	const samplePoints = [0];
@@ -88,7 +98,7 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	}
 
 	let passedCount = 0;
-	let failedPoints = [];
+	const failedPoints = [];
 
 	const sampleTimeout = getScaledTimeout(filePath, SAMPLE_DECODE_TIMEOUT);
 
@@ -115,11 +125,10 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 		}
 
 		if (result.timedOut) {
-			passedCount++;
 			logMessage.valid(
-				`[VALID] Sampled: timeout at ${point.toFixed(1)}s (counted as pass): ${path.basename(filePath)}`,
+				`[VALID] Sampled: timeout at ${point.toFixed(1)}s (inconclusive): ${path.basename(filePath)}`,
 			);
-			continue;
+			return inconclusiveResult(`ffmpeg sampled decode timed out at ${point.toFixed(1)}s`, { timedOut: true });
 		}
 
 		const { fatalErrors, nonFatalErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
@@ -162,8 +171,8 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 		if (tailResult.exitCode === 0) {
 			passedCount++;
 		} else if (tailResult.timedOut) {
-			passedCount++;
-			logMessage.valid(`[VALID] Sampled: tail timeout (counted as pass): ${path.basename(filePath)}`);
+			logMessage.valid(`[VALID] Sampled: tail timeout (inconclusive): ${path.basename(filePath)}`);
+			return inconclusiveResult("ffmpeg sampled tail decode timed out", { timedOut: true });
 		} else {
 			const { fatalErrors, nonFatalErrors: _nf } = classifyFFmpegErrors(tailResult.stderr, tailResult.stdout);
 			if (fatalErrors.length === 0) {
@@ -182,7 +191,7 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 
 	if (passedCount >= MIN_SAMPLE_PASSES_FOR_VALID) {
 		if (failedPoints.length === 0) {
-			return { valid: true, error: null };
+			return validResult();
 		}
 		const summary = failedPoints
 			.map((f) => `${f.point.toFixed ? f.point.toFixed(1) : f.point}s: ${f.fatalErrors.slice(0, 2).join("; ")}`)
@@ -190,7 +199,7 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 		logMessage.valid(
 			`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, accepted with warnings: ${path.basename(filePath)} (${summary})`,
 		);
-		return { valid: true, error: null };
+		return validResult();
 	}
 
 	const allFatal = failedPoints
@@ -200,29 +209,132 @@ async function validateVideoSampled(filePath, ffmpegBin, ffprobeBin) {
 	logMessage.valid(
 		`[VALID] Sampled: ${passedCount}/${totalAttempts} passed, rejected: ${path.basename(filePath)} (fatal: ${allFatal})`,
 	);
-	return { valid: false, error: `ffmpeg sampled decode: ${passedCount}/${totalAttempts} passed; fatal: ${allFatal}` };
+	return invalidResult(`ffmpeg sampled decode: ${passedCount}/${totalAttempts} passed; fatal: ${allFatal}`);
 }
 
 function validateExpectedSize(filePath, expectedSize, mediaType) {
 	if (!Number.isFinite(expectedSize) || expectedSize <= 0) {
-		return { valid: true, error: null };
+		return validResult();
 	}
 
 	const normalizedType = String(mediaType || "").toLowerCase();
 	const isImage = normalizedType.includes("image") || normalizedType.includes("photo");
 	if (isImage) {
-		return { valid: true, error: null };
+		return validResult();
 	}
 
 	const actualSize = fs.statSync(filePath).size;
 	if (actualSize !== expectedSize) {
 		return {
-			valid: false,
-			error: `size mismatch: expected ${expectedSize} bytes, got ${actualSize}`,
+			...invalidResult(`size mismatch: expected ${expectedSize} bytes, got ${actualSize}`),
+			actualSize,
+			expectedSize,
 		};
 	}
 
-	return { valid: true, error: null };
+	return validResult({ actualSize, expectedSize });
+}
+
+async function validateProbeJson(filePath, ffprobeBin, fileType) {
+	const cmd = [
+		ffprobeBin,
+		"-v",
+		"error",
+		"-show_entries",
+		"format=duration,size:stream=codec_type,codec_name",
+		"-of",
+		"json",
+		filePath,
+	];
+	const result = await execPromise(cmd, getScaledTimeout(filePath, VALIDATION_TIMEOUT));
+
+	if (result.timedOut) {
+		return inconclusiveResult("ffprobe strict validation timed out", { timedOut: true });
+	}
+
+	if (result.exitCode !== 0) {
+		const { fatalErrors, nonFatalErrors, unknownErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
+		if (fatalErrors.length > 0) {
+			return invalidResult(`ffprobe strict: ${fatalErrors.join("; ").substring(0, 200)}`, {
+				fatalErrors,
+				nonFatalErrors,
+				unknownErrors,
+			});
+		}
+		return inconclusiveResult(`ffprobe strict exit code ${result.exitCode}`, { nonFatalErrors, unknownErrors });
+	}
+
+	let probe;
+	try {
+		probe = JSON.parse(result.stdout || "{}");
+	} catch (error) {
+		return inconclusiveResult(`ffprobe strict returned invalid JSON: ${error.message}`);
+	}
+
+	const streams = Array.isArray(probe.streams) ? probe.streams : [];
+	if (fileType === "video" && !streams.some((stream) => stream.codec_type === "video")) {
+		return invalidResult("ffprobe strict: no video stream found");
+	}
+	if (fileType === "audio" && !streams.some((stream) => stream.codec_type === "audio")) {
+		return invalidResult("ffprobe strict: no audio stream found");
+	}
+
+	const duration = Number.parseFloat(probe.format?.duration);
+	if ((fileType === "video" || fileType === "audio") && (!Number.isFinite(duration) || duration <= 0)) {
+		return invalidResult("ffprobe strict: invalid duration");
+	}
+
+	return validResult({ duration, streams });
+}
+
+async function validateStrictDecode(filePath, ffmpegBin, fileType) {
+	const mapArgs = fileType === "audio" ? ["-map", "0:a"] : fileType === "video" ? ["-map", "0:v?"] : [];
+	const cmd = [ffmpegBin, "-v", "error", "-xerror", "-i", filePath, ...mapArgs, "-f", "null", "-"];
+	const result = await execPromise(cmd, getScaledTimeout(filePath, DEEP_DECODE_TIMEOUT));
+
+	if (result.exitCode === 0) {
+		return validResult();
+	}
+
+	if (result.timedOut) {
+		return inconclusiveResult("ffmpeg strict decode timed out", { timedOut: true });
+	}
+
+	const { fatalErrors, nonFatalErrors, unknownErrors } = classifyFFmpegErrors(result.stderr, result.stdout);
+	if (fatalErrors.length > 0) {
+		return invalidResult(`ffmpeg strict decode: ${fatalErrors.join("; ").substring(0, 200)}`, {
+			fatalErrors,
+			nonFatalErrors,
+			unknownErrors,
+		});
+	}
+
+	if (nonFatalErrors.length > 0 && unknownErrors.length === 0) {
+		return validResult({ nonFatalErrors });
+	}
+
+	const unknownMsg = unknownErrors.join("; ").substring(0, 200) || `ffmpeg strict exit code ${result.exitCode}`;
+	return inconclusiveResult(`ffmpeg strict decode inconclusive: ${unknownMsg}`, { nonFatalErrors, unknownErrors });
+}
+
+async function validateMediaStrict(filePath, ffmpegBin, ffprobeBin, fileType) {
+	if (fileType === "image") {
+		const result = await validateStrictDecode(filePath, ffmpegBin, fileType);
+		return { ...result, profile: "strict" };
+	}
+
+	const probeResult = await validateProbeJson(filePath, ffprobeBin, fileType);
+	if (!probeResult.valid) {
+		return { ...probeResult, profile: "strict" };
+	}
+
+	const decodeResult = await validateStrictDecode(filePath, ffmpegBin, fileType);
+	return {
+		...decodeResult,
+		profile: "strict",
+		duration: probeResult.duration,
+		streams: probeResult.streams,
+	};
 }
 
 function sleep(ms) {
@@ -246,11 +358,11 @@ class ValidationService {
 
 	async validateMediaFile(filePath, mediaType, options = {}) {
 		if (!this.ffmpegPaths) {
-			return { valid: true, error: null, profile: "none", action: "skip" };
+			return validResult({ profile: "none", action: "skip" });
 		}
 
 		if (!fs.existsSync(filePath)) {
-			return { valid: false, error: "File does not exist", profile: "none" };
+			return invalidResult("File does not exist", { profile: "none" });
 		}
 
 		const sizeCheck = validateExpectedSize(filePath, options.expectedSize, mediaType);
@@ -258,8 +370,7 @@ class ValidationService {
 			return { ...sizeCheck, profile: "size-check" };
 		}
 
-		const normalizedType = String(mediaType || "").toLowerCase();
-		const fileType = normalizedType.includes("video") ? "video" : "image";
+		const fileType = getMediaFileType(mediaType);
 		const profile = getValidationProfile({
 			deepValidation: options.deepValidation,
 			mediaType,
@@ -269,17 +380,36 @@ class ValidationService {
 		logMessage.valid(`[VALID] Validation profile=${profile} file=${path.basename(filePath)} type=${fileType}`);
 
 		if (fileType === "image") {
-			const result = await validateImage(filePath, this.ffmpegPaths.ffmpeg);
+			const result =
+				profile === "strict"
+					? await validateMediaStrict(filePath, this.ffmpegPaths.ffmpeg, this.ffmpegPaths.ffprobe, fileType)
+					: await validateImage(filePath, this.ffmpegPaths.ffmpeg);
+			return { ...result, profile, fileType };
+		}
+
+		if (profile === "strict") {
+			const result = await validateMediaStrict(
+				filePath,
+				this.ffmpegPaths.ffmpeg,
+				this.ffmpegPaths.ffprobe,
+				fileType,
+			);
 			return { ...result, profile, fileType };
 		}
 
 		if (profile === "full") {
-			const result = await validateVideoDeep(filePath, this.ffmpegPaths.ffmpeg);
+			const result =
+				fileType === "audio"
+					? await validateStrictDecode(filePath, this.ffmpegPaths.ffmpeg, fileType)
+					: await validateVideoDeep(filePath, this.ffmpegPaths.ffmpeg);
 			return { ...result, profile, fileType };
 		}
 
 		if (profile === "sampled") {
-			const result = await validateVideoSampled(filePath, this.ffmpegPaths.ffmpeg, this.ffmpegPaths.ffprobe);
+			const result =
+				fileType === "audio"
+					? await validateVideo(filePath, this.ffmpegPaths.ffprobe)
+					: await validateVideoSampled(filePath, this.ffmpegPaths.ffmpeg, this.ffmpegPaths.ffprobe);
 			return { ...result, profile, fileType };
 		}
 
