@@ -17,7 +17,22 @@
 		"test": "node --test \"tests/**/*.test.js\"",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"format:check": "prettier --check ."
+		"format:check": "prettier --check .",
+		"build:bundle": "node build/esbuild.config.mjs",
+		"build:exe": "pkg dist/bundle.js --target node22-win-x64 --output dist/telegram-channel-downloader.exe",
+		"build": "npm run build:bundle && npm run build:exe",
+		"build:pack": "npm run build && node build/pack-release.mjs"
+	},
+	"pkg": {
+		"assets": [
+			"node_modules/better-sqlite3/build/Release/**/*",
+			"node_modules/better-sqlite3/lib/**/*",
+			"node_modules/better-sqlite3/package.json"
+		],
+		"targets": [
+			"node22-win-x64"
+		],
+		"outputPath": "dist"
 	},
 	"nodemonConfig": {
 		"ignore": [
@@ -53,6 +68,8 @@
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.26.0",
+		"@yao-pkg/pkg": "^6.20.0",
+		"esbuild": "^0.28.0",
 		"eslint": "^10.2.1",
 		"eslint-config-prettier": "^9.1.0",
 		"nodemon": "^3.1.10",

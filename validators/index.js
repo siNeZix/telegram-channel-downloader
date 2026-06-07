@@ -127,9 +127,7 @@ async function runValidation(options = {}) {
 	} = options;
 
 	if (verifyHash) {
-		console.error(
-			"--verify-hash requires a live Telegram session and is only available during download/listen.",
-		);
+		console.error("--verify-hash requires a live Telegram session and is only available during download/listen.");
 		return 1;
 	}
 

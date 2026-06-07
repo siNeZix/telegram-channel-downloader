@@ -1,6 +1,9 @@
 const js = require("@eslint/js");
 
 module.exports = [
+	{
+		ignores: ["node_modules/**", "export/**", "logs/**", "dist/**", "build/**"],
+	},
 	js.configs.recommended,
 	{
 		languageOptions: {
@@ -28,6 +31,5 @@ module.exports = [
 			"prefer-const": "warn",
 			"no-var": "error",
 		},
-		ignores: ["node_modules/**", "export/**", "logs/**"],
 	},
 ];

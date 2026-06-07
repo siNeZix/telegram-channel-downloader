@@ -533,7 +533,7 @@ class DownloadManager {
 			downloadableFiles,
 		} = context;
 		const deepValidation = validationProfile === "full" || validationProfile === "strict";
-		const resolvedProfile = validationProfile !== "none" ? validationProfile : (deepValidation ? "full" : null);
+		const resolvedProfile = validationProfile !== "none" ? validationProfile : deepValidation ? "full" : null;
 
 		logMessage.dl(`[DL] processMessageBatch: channelId=${channelId}, messageCount=${messages.length}`);
 

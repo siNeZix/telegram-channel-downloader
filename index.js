@@ -1,4 +1,5 @@
 const paths = require("./utils/paths");
+const path = require("path");
 const { parseRuntimeOptions } = require("./utils/cli_utils");
 const {
 	parseCommand,
@@ -9,7 +10,8 @@ const {
 	COMMANDS,
 } = require("./cli/commands");
 
-const pkg = require("./package.json");
+const PKG_VERSION = "__PKG_VERSION__";
+const pkg = { version: PKG_VERSION !== "__PKG_VERSION__" ? PKG_VERSION : require("./package.json").version };
 
 // argv tail; runtime path options are stripped first so command parsers only
 // see their own flags (and paths.* is configured as a side effect).
@@ -378,7 +380,7 @@ const runAutoMode = async (channelIdOverride) => {
 			logMessage.success(`[AUTO] Using last channel: ${selectedChannelId}`);
 		} else {
 			logMessage.error(
-				"[AUTO] No channel ID provided and no last selection found. Use: node index.js download --auto --channel <channelId>",
+				`[AUTO] No channel ID provided and no last selection found. Use: ${process.pkg ? path.basename(process.execPath) : "node index.js"} download --auto --channel <channelId>`,
 			);
 			return;
 		}

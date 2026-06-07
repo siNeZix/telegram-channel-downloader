@@ -66,7 +66,7 @@ class PathsManager {
 	}
 
 	reset() {
-		const scriptRoot = path.resolve(__dirname, "..");
+		const scriptRoot = process.pkg ? path.dirname(process.execPath) : path.resolve(__dirname, "..");
 		const envRoot = process.env[ENV_KEYS.root];
 		const envExportDir = process.env[ENV_KEYS.export];
 		const envConfigFile = process.env[ENV_KEYS.config];

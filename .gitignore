@@ -12,6 +12,9 @@ logs/
 snapshots/
 quarantine/
 
+# Build output
+dist/
+
 # Dependencies
 node_modules/
 

@@ -1,4 +1,7 @@
 const { parseArgs, resolveChannelId, resolveExportDir, formatHelp } = require("../utils/cli_utils");
+const path = require("path");
+
+const CLI_NAME = process.pkg ? path.basename(process.execPath) : "node index.js";
 
 /**
  * Central command catalog for the unified CLI.
@@ -216,7 +219,7 @@ const listCommands = () => Object.keys(COMMANDS);
  * @returns {string}
  */
 const formatTopLevelHelp = () => {
-	const lines = ["Usage: node index.js [command] [options]", "", "Commands:"];
+	const lines = [`Usage: ${CLI_NAME} [command] [options]`, "", "Commands:"];
 	const width = Math.max(...Object.keys(COMMANDS).map((c) => c.length));
 	for (const [name, entry] of Object.entries(COMMANDS)) {
 		lines.push(`  ${name.padEnd(width)}  ${entry.summary}`);
@@ -233,7 +236,7 @@ const formatTopLevelHelp = () => {
 		"  --help, -h            Show help",
 		"  --version             Show version",
 		"",
-		"Run `node index.js <command> --help` for command-specific options.",
+		`Run \`${CLI_NAME} <command> --help\` for command-specific options.`,
 	);
 	return lines.join("\n");
 };
@@ -250,7 +253,7 @@ const formatCommandHelp = (command) => {
 	}
 	const positionalSuffix = entry.spec?.positionalName ? ` [${entry.spec.positionalName}]` : "";
 	return formatHelp({
-		usage: `node index.js ${command}${positionalSuffix} [options]`,
+		usage: `${CLI_NAME} ${command}${positionalSuffix} [options]`,
 		description: entry.summary,
 		spec: entry.spec || {},
 	});
